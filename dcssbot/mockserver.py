@@ -143,6 +143,18 @@ class MockWebTilesServer:
                 )
                 await self.send(session, {"msg": "lobby_clear"})
                 await self.send(session, {"msg": "lobby_complete"})
+                # Real servers advertise their games this way, as rendered
+                # HTML whose hrefs carry the ids `play` expects.
+                await self.send(
+                    session,
+                    {
+                        "msg": "set_game_links",
+                        "content": (
+                            f"<a href='#play-{self.game_id}'>Play trunk</a>"
+                            "<a href='#play-seeded-web-trunk'>Seeded</a>"
+                        ),
+                    },
+                )
             else:
                 await self.send(
                     session, {"msg": "login_fail", "reason": "Wrong password."}

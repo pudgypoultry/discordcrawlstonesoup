@@ -196,6 +196,14 @@ python scripts/probe.py --key o       # connect, send one key, print the JSON
 a real server: it does the connection, the login and one keystroke with nothing
 else in the way, and prints the decoded messages.
 
+`--games` logs in and prints the game ids a server offers, which is what
+`DCSS_GAME_ID` needs and which nothing else exposes:
+
+```sh
+python scripts/probe.py --url wss://crawl.example.org/socket \
+    --username mybot --password ... --games
+```
+
 See `docker/` for a local build of real crawl, and `rc/bot.rc` for the rcfile
 options that cut message volume and remove modal prompts — tuning that file is
 the highest-leverage hour in this project.
