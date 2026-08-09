@@ -1,0 +1,64 @@
+# rcfile for the Discord relay's crawl account.
+#
+# Tuning this is the highest-leverage work in the project: every option below
+# either removes a modal prompt the bot would have to detect and clear, or cuts
+# the volume of messages the Discord relay has to batch. Paste it into the
+# account's rc through the WebTiles interface (or `dcssbot.client.set_rc`).
+#
+# Every option here is checked against crawl-ref/docs/options_guide.txt.
+
+##### Message volume ########################################################
+
+# The single biggest win. Without it, any burst longer than the message window
+# stops the game on a --more-- that something has to notice and clear.
+show_more = false
+
+# Collapse "You hit the rat." x5 before it ever reaches us.
+msg_condense_repeats = true
+msg_condense_short   = true
+
+# Keep the message window's history; the relay reads what crawl sends, and
+# clearing per turn interacts badly with show_more.
+clear_messages = false
+
+##### Animation #############################################################
+
+# Travel, auto-explore and resting otherwise dribble out one message per step.
+# At -1 the game jumps to the end and sends a single batch.
+travel_delay  = -1
+explore_delay = -1
+rest_delay    = -1
+view_delay    = 0
+
+# `open` is the default and the one we want: `approach` would halt
+# auto-explore in front of every door, turning one .dcss/o into a dozen.
+travel_open_doors = open
+
+##### Fewer interruptions ###################################################
+
+# Auto-exclude dangerous stationary monsters so travel stops asking.
+auto_exclude += oklob plant,statue,curse skull,roxanne,hyperactive ballistomycete
+
+# Don't stop to ask about skill training on every level-up.
+default_manual_training = false
+
+##### Safety ################################################################
+#
+# easy_confirm is deliberately left at its default of `safe`, which forces a
+# capital Y on dangerous confirmations. The grammar's .dcss/yes only ever sends
+# a lowercase `y`, so no sequence of chat messages can accept one of those
+# prompts. Do not set this to `all`.
+#
+# easy_confirm = safe
+#
+# Note that confirm_action is NOT a way to guard Save and Quit: it matches
+# spell and ability names only. Keeping those commands out of reach is the
+# grammar's job, not the rcfile's.
+
+##### Display ###############################################################
+
+# The relay reads text, not tiles, so keep the message stream plain.
+show_travel_trail = false
+
+# Skip the incremental frames of beams and ranged attacks.
+reduce_animations = true
