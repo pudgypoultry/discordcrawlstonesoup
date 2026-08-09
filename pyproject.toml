@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dcssbot"
+version = "0.1.0"
+description = "Discord bot that relays chat commands to a Dungeon Crawl Stone Soup WebTiles game"
+requires-python = ">=3.10"
+dependencies = [
+    "websockets>=12.0",
+    "discord.py>=2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+dcssbot = "dcssbot.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["dcssbot*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning:dcssbot.*"]
