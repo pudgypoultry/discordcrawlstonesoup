@@ -11,8 +11,8 @@ Then open <http://localhost:8080/>, register the account the bot will use, and
 point the bot at it:
 
 ```sh
-export DCSS_WS_URL=ws://localhost:8080/socket
-export DCSS_SITE_URL=http://localhost:8080/
+export DCSS_WS_URL=ws://127.0.0.1:8080/socket
+export DCSS_SITE_URL=http://127.0.0.1:8080/
 export DCSS_GAME_ID=dcss-web-trunk
 ```
 

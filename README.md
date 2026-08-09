@@ -78,12 +78,70 @@ The bot needs the privileged **Message Content** intent, enabled in the Discord
 developer portal. Without it the bot connects fine and simply never sees a
 message.
 
+### On Windows
+
+Install into a virtual environment. Installing into a system Python fails on
+the console-script shims with `WinError 2 ... websockets.exe.deleteme`, and no
+amount of retrying fixes it.
+
+```powershell
+py -3.12 -m venv .venv
+.venv\Scripts\python -m pip install -e ".[dev]"
+```
+
+Calling `.venv\Scripts\python` directly avoids `Activate.ps1`, which trips over
+the default PowerShell execution policy. Settings are per-window and vanish
+when it closes:
+
+```powershell
+$env:DISCORD_TOKEN="..."
+$env:DISCORD_CHANNEL_IDS="..."
+.venv\Scripts\python -m dcssbot
+```
+
+### Discord setup
+
+1. <https://discord.com/developers/applications> → **New Application**.
+2. **Bot** → turn on **MESSAGE CONTENT INTENT** → Save.
+3. **Bot** → **Reset Token** → copy it. It is shown once, and it is a password.
+4. **OAuth2 → URL Generator** → scope **bot**, permissions **View Channels**
+   and **Send Messages** → open the generated URL → pick your server.
+5. In Discord, **User Settings → Advanced → Developer Mode**, then right-click
+   the channel → **Copy Channel ID** for `DISCORD_CHANNEL_IDS`.
+
+## Troubleshooting
+
+On startup the bot logs what it resolved to, which answers most questions:
+
+```
+INFO dcssbot.runner:  game: ws://127.0.0.1:8080/socket (id dcss-web-trunk, user mybot) | discord: 1 channel(s), prefix '.dcss/' | interval 0.75s
+INFO dcssbot.session: connecting to ws://127.0.0.1:8080/socket as mybot (game dcss-web-trunk)
+INFO dcssbot.session: connected, logging in
+INFO dcssbot.session: logged in as mybot
+```
+
+Set `DCSS_LOG_LEVEL=DEBUG` to also see commands being dropped and every
+context change.
+
+| Symptom | Cause |
+| --- | --- |
+| `.dcss/help` works but `.dcss/o` does nothing | The game side is not connected. The bot says so in-channel once a minute; `.dcss/status` has the detail |
+| Log stops after `connecting to ...` | The connect is hanging rather than being refused — wrong host, or a firewall dropping packets. It gives up after 20s |
+| `session ended: ... Connect call failed` | Nothing is listening. Start the mock, or check the port |
+| Connects on Linux but not Windows | `localhost` resolves to `::1` first on Windows. Use `127.0.0.1` in `DCSS_WS_URL` |
+| Bot online, ignores every message | Message Content intent is off, or `DISCORD_CHANNEL_IDS` holds a server ID instead of a channel ID |
+| `cannot see channel <id>` | The bot is not in that server, or lacks View Channels |
+
+A game that is genuinely running always announces itself: the bot posts
+**New game started** with the spectate link, unprompted. If that message never
+appeared, the game side never got in.
+
 ### Settings
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `DCSS_WS_URL` | `ws://localhost:8080/socket` | WebTiles websocket |
-| `DCSS_SITE_URL` | `http://localhost:8080/` | Base URL for `#watch-` links |
+| `DCSS_WS_URL` | `ws://127.0.0.1:8080/socket` | WebTiles websocket |
+| `DCSS_SITE_URL` | `http://127.0.0.1:8080/` | Base URL for `#watch-` links |
 | `DCSS_USERNAME` / `DCSS_PASSWORD` | — | The bot's crawl account |
 | `DCSS_GAME_ID` | `dcss-web-trunk` | Game to start |
 | `DISCORD_TOKEN` | — | Bot token |
@@ -129,7 +187,7 @@ both "north" and "no".
 ## Development
 
 ```sh
-python -m pytest                      # 154 tests, no network needed
+python -m pytest                      # 157 tests, no network needed
 python -m dcssbot.mockserver          # a stand-in WebTiles server
 python scripts/probe.py --key o       # connect, send one key, print the JSON
 ```

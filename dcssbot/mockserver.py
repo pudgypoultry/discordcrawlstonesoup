@@ -79,7 +79,10 @@ class MockWebTilesServer:
             select_subprotocol=_select_subprotocol,
             ping_interval=None,
         )
-        self.port = next(iter(self._server.sockets)).getsockname()[1]
+        # A hostname can resolve to several addresses and bind a socket for
+        # each, so only trust the socket's port when we asked for an ephemeral
+        # one (in which case there is exactly one bind).
+        self.port = port or next(iter(self._server.sockets)).getsockname()[1]
         return self.port
 
     async def stop(self) -> None:
@@ -253,7 +256,9 @@ async def _main(args: argparse.Namespace) -> None:
         username=args.username, password=args.password, game_id=args.game_id
     )
     port = await server.start(args.host, args.port)
+    bound = sorted({s.getsockname()[0] for s in server._server.sockets})
     log.info("mock webtiles server on ws://%s:%d/socket", args.host, port)
+    log.info("listening on %s", ", ".join(bound))
     log.info("login as %s / %s, game_id %s", args.username, args.password, args.game_id)
     try:
         await asyncio.Future()
@@ -265,7 +270,9 @@ async def _main(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--host", default="127.0.0.1")
+    # `localhost` resolves to both ::1 and 127.0.0.1 and binds each, so a
+    # client that prefers IPv6 — which Windows does — still finds the server.
+    parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--username", default=DEFAULT_USERNAME)
     parser.add_argument("--password", default=DEFAULT_PASSWORD)

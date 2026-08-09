@@ -67,9 +67,12 @@ class Config:
     """Everything the bot needs to run."""
 
     # -- WebTiles ---------------------------------------------------------
-    websocket_url: str = field(default_factory=lambda: _env("DCSS_WS_URL", "ws://localhost:8080/socket"))
+    #: An IPv4 literal rather than ``localhost`` on purpose: Windows resolves
+    #: ``localhost`` to ``::1`` first, and a server listening only on IPv4
+    #: then looks unreachable for no visible reason.
+    websocket_url: str = field(default_factory=lambda: _env("DCSS_WS_URL", "ws://127.0.0.1:8080/socket"))
     #: Base page URL, used to build spectate links (``<base>#watch-<user>``).
-    site_url: str = field(default_factory=lambda: _env("DCSS_SITE_URL", "http://localhost:8080/"))
+    site_url: str = field(default_factory=lambda: _env("DCSS_SITE_URL", "http://127.0.0.1:8080/"))
     username: str = field(default_factory=lambda: _env("DCSS_USERNAME", ""))
     password: str = field(default_factory=lambda: _env("DCSS_PASSWORD", ""))
     game_id: str = field(default_factory=lambda: _env("DCSS_GAME_ID", "dcss-web-trunk"))

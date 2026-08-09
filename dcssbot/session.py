@@ -125,7 +125,17 @@ class GameSession:
             # Older crawl versions replayed the message buffer on re-attach.
             self.log.note_reconnect()
 
+        # Logged before the connect, not after: a connect that hangs rather
+        # than failing fast is otherwise completely silent, and the first
+        # question is always "which URL is it actually using".
+        log.info(
+            "connecting to %s as %s (game %s)",
+            self.config.websocket_url,
+            self.config.username,
+            self.config.game_id,
+        )
         await client.start()
+        log.info("connected, logging in")
         try:
             self.username = await client.login(self.config.username, self.config.password)
             log.info("logged in as %s", self.username)

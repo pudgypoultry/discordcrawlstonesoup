@@ -189,3 +189,34 @@ async def test_a_custom_prefix_is_honoured() -> None:
     assert [item.name for item in queue] == ["o"]
     await relay.on_message(FakeMessage(".dcss/o"))
     assert len(queue) == 1
+
+
+async def test_a_dropped_command_says_so_when_no_game_is_running() -> None:
+    # Silence here is indistinguishable from a broken bot, which is exactly
+    # the confusion this notice exists to remove.
+    relay, queue = make_relay()
+    relay.session.state.handle({"msg": "game_ended", "reason": "quit"})
+    channel = FakeChannel()
+    await relay.on_message(FakeMessage(".dcss/o", channel=channel))
+    assert len(queue) == 0
+    assert "No game is running" in channel.sent[0]
+
+
+async def test_the_no_game_notice_is_rate_limited() -> None:
+    relay, _ = make_relay()
+    relay.session.state.handle({"msg": "game_ended", "reason": "quit"})
+    channel = FakeChannel()
+    for _ in range(5):
+        await relay.on_message(FakeMessage(".dcss/o", channel=channel))
+    assert len(channel.sent) == 1
+
+
+async def test_ordinary_context_churn_stays_silent() -> None:
+    # A movement key arriving while a menu is open is normal in an open
+    # channel; commenting on it every time would drown the log feed.
+    relay, _ = make_relay()
+    relay.session.state.handle({"msg": "ui-push"})
+    channel = FakeChannel()
+    for _ in range(5):
+        await relay.on_message(FakeMessage(".dcss/o", channel=channel))
+    assert channel.sent == []
