@@ -19,6 +19,18 @@ log = logging.getLogger(__name__)
 async def run(config: Config) -> None:
     """Run the bot until cancelled."""
     config.validate()
+    # The settings come from the environment, which is easy to get wrong and
+    # impossible to see afterwards. Say out loud what we resolved to.
+    log.info(
+        "game: %s (id %s, user %s) | discord: %d channel(s), prefix %r | "
+        "interval %.2fs",
+        config.websocket_url,
+        config.game_id,
+        config.username,
+        len(config.channel_ids),
+        config.command_prefix,
+        config.command_interval,
+    )
 
     queue = CommandQueue(
         max_depth=config.queue_depth,

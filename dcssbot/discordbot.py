@@ -21,6 +21,7 @@ import discord
 
 from .cmdqueue import CommandQueue
 from .config import Config
+from .gamestate import InputContext
 from .grammar import ParseError, allowed_in, help_text, parse
 from .session import GameEvent
 
@@ -30,6 +31,10 @@ log = logging.getLogger(__name__)
 HELP_COOLDOWN = 30.0
 #: How often the bot will explain a parse error, so a typo storm stays quiet.
 ERROR_COOLDOWN = 10.0
+#: How often the bot will say that there is no game to send commands to.
+#: Rarely, because it is a standing condition rather than a per-message fault —
+#: but never saying it makes a disconnected game side look like a dead bot.
+NO_GAME_COOLDOWN = 60.0
 
 
 class DiscordRelay(discord.Client):
@@ -47,6 +52,7 @@ class DiscordRelay(discord.Client):
         self._ready = asyncio.Event()
         self._last_help = 0.0
         self._last_error = 0.0
+        self._last_no_game = 0.0
         self._start_message: discord.Message | None = None
 
     # -- lifecycle --------------------------------------------------------
@@ -94,6 +100,7 @@ class DiscordRelay(discord.Client):
         context = self.session.state.context if self.session else None
         if context is not None and not allowed_in(parsed.command, context):
             log.debug("dropping %s: not allowed in %s", parsed.name, context.value)
+            await self._note_no_game(message, context)
             return
 
         author = str(message.author.id)
@@ -123,6 +130,28 @@ class DiscordRelay(discord.Client):
             return "No game running."
         status = state.status_line() or "no player data yet"
         return f"`{status}` — waiting on: {state.context.value}, {self.queue.summary()}"
+
+    async def _note_no_game(self, message: discord.Message, context: InputContext) -> None:
+        """Say once in a while that there is no game to send commands to.
+
+        Commands dropped for ordinary context churn — a movement key while a
+        menu is open — stay silent, because in an open channel that would be
+        constant. But a game side that never connected drops *everything*, and
+        silence there is indistinguishable from a broken bot.
+        """
+        if context not in (InputContext.LOBBY, InputContext.UNKNOWN):
+            return
+        now = time.monotonic()
+        if now - self._last_no_game < NO_GAME_COOLDOWN:
+            return
+        self._last_no_game = now
+        try:
+            await message.channel.send(
+                "No game is running, so commands are being ignored. "
+                f"`{self.config.command_prefix}status` has the details."
+            )
+        except discord.DiscordException:
+            log.debug("could not post the no-game notice", exc_info=True)
 
     async def _reply_error(self, message: discord.Message, text: str) -> None:
         now = time.monotonic()
