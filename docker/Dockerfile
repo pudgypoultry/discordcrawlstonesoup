@@ -7,17 +7,20 @@
 #   docker build -t dcss-webtiles docker/
 #   docker run --rm -p 8080:8080 dcss-webtiles
 #
-# Then: DCSS_WS_URL=ws://localhost:8080/socket
+# Then: DCSS_WS_URL=ws://127.0.0.1:8080/socket
 #
-# NOTE: this has not been built in CI — there is no Docker daemon in the
-# development environment it was written in. Package names follow crawl's
-# INSTALL.md; expect to adjust a version or two on first build.
+# The build compiles crawl from source and takes 10-30 minutes.
 
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Build dependencies from crawl-ref/INSTALL.md, plus the webserver's Python bits.
+# Build dependencies from crawl-ref/INSTALL.md.
+#
+# python3-yaml is not optional and is easy to miss: the build runs
+# util/{job,species,mon,form}-gen.py to generate headers, and each of them
+# imports yaml. Without it `make` dies with ModuleNotFoundError long before
+# anything is compiled.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libncursesw5-dev \
@@ -28,7 +31,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libz-dev \
         pkg-config \
         python3 \
-        python3-pip \
+        python3-yaml \
         python3-venv \
         git \
         ca-certificates \
@@ -38,7 +41,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN locale-gen en_US.UTF-8
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-ARG CRAWL_REF=master
+# A release tag, not a branch, and deliberately so. The Makefile builds
+# webserver/webtiles/version.txt by running `git describe` with no fallback,
+# and a --depth 1 clone of a branch has no tag in its history, so that target
+# fails with "No names found, cannot describe anything". Cloning a tag puts
+# HEAD on it and `git describe` answers immediately, which also makes the
+# image reproducible. Building trunk needs a full clone instead.
+ARG CRAWL_REF=0.34.1
 RUN git clone --depth 1 --branch "${CRAWL_REF}" --recurse-submodules --shallow-submodules \
         https://github.com/crawl/crawl.git /crawl
 
@@ -57,4 +66,7 @@ EXPOSE 8080
 # what DCSS_GAME_ID defaults to. dgl_mode is on by default, so register the
 # bot's account once through the web UI at http://localhost:8080/ before
 # pointing the bot at it.
+#
+# bind_address defaults to "" (all interfaces), which is what makes the port
+# reachable from outside the container.
 CMD ["/venv/bin/python", "webserver/server.py"]
