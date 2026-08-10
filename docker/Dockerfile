@@ -15,24 +15,40 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Build dependencies from crawl-ref/INSTALL.md.
+# Build dependencies, taken from crawl-ref/INSTALL.md.
 #
-# python3-yaml is not optional and is easy to miss: the build runs
-# util/{job,species,mon,form}-gen.py to generate headers, and each of them
-# imports yaml. Without it `make` dies with ModuleNotFoundError long before
-# anything is compiled.
+# Two of these are easy to miss because a developer machine usually has them
+# already, so the build only fails in a clean image:
+#
+#   python3-yaml   the build runs util/{job,species,mon,form}-gen.py to
+#                  generate headers and all four import yaml, so without it
+#                  `make` dies with ModuleNotFoundError before compiling
+#                  anything at all.
+#   libpng-dev     WEBTILES=y is a *tiles* build, so it builds rltiles' tilegen
+#                  tool, which includes <png.h>. INSTALL.md lists this under
+#                  "dependencies for tiles builds" rather than the base set.
+#                  Without it: `png.h: No such file or directory`.
+#
+# libfreetype6-dev and fonts-dejavu-core come from the same tiles list. SDL is
+# deliberately omitted: WEBTILES renders in the browser, so USE_TILE_LOCAL is
+# off and nothing links against it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libncursesw5-dev \
         bison \
         flex \
-        liblua5.1-0-dev \
+        liblua5.4-dev \
         libsqlite3-dev \
         libz-dev \
         pkg-config \
+        binutils-gold \
         python3 \
         python3-yaml \
         python3-venv \
+        python-is-python3 \
+        libpng-dev \
+        libfreetype6-dev \
+        fonts-dejavu-core \
         git \
         ca-certificates \
         locales \

@@ -18,12 +18,17 @@ export DCSS_GAME_ID=dcss-web-trunk
 
 The build compiles crawl from source and takes 10–30 minutes.
 
-These steps were run end to end on `ubuntu:24.04` — the image's own base — at
-both `-j4` and `-j16`, since one of the traps below only appears at high
-parallelism. The resulting server was driven with `scripts/probe.py`: log in,
-list games, start a game, answer character creation with `#` and `*`,
-auto-explore, and relay the log. The behaviour the bot depends on is what real
-crawl does:
+These steps were run end to end in a **pristine `ubuntu-base-24.04` root** — an
+extracted base rootfs with nothing but the packages listed above — and at
+`-j16`, not just `-j4`. Both details matter: two of the traps below are
+invisible on a developer machine that already has the headers installed, and
+one only appears at high parallelism. Testing on a machine that happened to
+have libpng, at a core count that happened to win a race, is how they reached
+users in the first place.
+
+The resulting server was driven with `scripts/probe.py`: log in, list games,
+start a game, answer character creation with `#` and `*`, auto-explore, and
+relay the log. The behaviour the bot depends on is what real crawl does:
 
 * the species screen arrives as `ui-push` while `input_mode` still reports
   `COMMAND`, which is exactly why the UI stack is tracked separately
@@ -35,6 +40,14 @@ crawl does:
 ## Two things the build needs that are easy to miss
 
 Both of these were wrong here first time round, so they are worth stating.
+
+**`WEBTILES=y` is a tiles build and needs libpng.** It compiles rltiles'
+`tilegen` tool, which includes `<png.h>`. `INSTALL.md` lists `libpng-dev` under
+*dependencies for tiles builds*, separately from the base set, which is easy to
+read past when the target is a browser-rendered server with no SDL in sight.
+Without it the build fails at `tool/tile_colour.o` with
+`png.h: No such file or directory`. SDL is genuinely not needed —
+`USE_TILE_LOCAL` is off — but libpng, freetype and the DejaVu fonts are.
 
 **PyYAML is a build dependency, not just a runtime one.** `make` runs
 `util/job-gen.py`, `species-gen.py`, `mon-gen.py` and `form-gen.py` to generate
@@ -89,7 +102,9 @@ Windows side at the default `ws://127.0.0.1:8080/socket`.
 
 ```sh
 sudo apt install -y build-essential libncursesw5-dev bison flex \
-    liblua5.1-0-dev libsqlite3-dev libz-dev pkg-config python3-yaml python3-venv git
+    liblua5.4-dev libsqlite3-dev libz-dev pkg-config binutils-gold \
+    python3-yaml python3-venv python-is-python3 \
+    libpng-dev libfreetype6-dev fonts-dejavu-core git
 git clone --depth 1 --branch 0.34.1 --recurse-submodules --shallow-submodules \
     https://github.com/crawl/crawl.git
 cd crawl/crawl-ref/source
