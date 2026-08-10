@@ -18,10 +18,12 @@ export DCSS_GAME_ID=dcss-web-trunk
 
 The build compiles crawl from source and takes 10–30 minutes.
 
-These steps were run end to end on `ubuntu:24.04` — the image's own base — and
-the resulting server was driven with `scripts/probe.py`: log in, list games,
-start a game, answer character creation with `#` and `*`, auto-explore, and
-relay the log. The behaviour the bot depends on is what real crawl does:
+These steps were run end to end on `ubuntu:24.04` — the image's own base — at
+both `-j4` and `-j16`, since one of the traps below only appears at high
+parallelism. The resulting server was driven with `scripts/probe.py`: log in,
+list games, start a game, answer character creation with `#` and `*`,
+auto-explore, and relay the log. The behaviour the bot depends on is what real
+crawl does:
 
 * the species screen arrives as `ui-push` while `input_mode` still reports
   `COMMAND`, which is exactly why the UI stack is tracked separately
@@ -40,6 +42,25 @@ headers, and all four `import yaml`. Without it the build dies with
 `ModuleNotFoundError: No module named 'yaml'` before compiling anything.
 Installing it into a virtualenv afterwards does not help — it has to be on the
 system interpreter at build time.
+
+**A race in crawl's Makefile has to be stepped around.** `RLTILES = rltiles`
+carries no trailing slash, so the rule for the status icon sizes is written as
+`$(RLTILES)status-icon-sizes.js` — `rltilesstatus-icon-sizes.js`, a filename
+nothing creates. The copy into `webserver/` needs
+`rltiles/status-icon-sizes.js`, which the generator does write but which no
+rule declares, so make has no rule for the file it needs and the build only
+survives if that file already exists when the `webserver` target is evaluated.
+
+That is scheduling luck, and it scales with `-j`: a 4-core build usually wins,
+a 16-core build reliably fails with
+
+```
+make: *** No rule to make target 'webserver/game_data/static/status-icon-sizes.js', needed by 'webserver'.  Stop.
+```
+
+Running `util/status-icon-sizes-gen.py` before the main build removes the race
+at any core count. Both the Dockerfile and the native instructions below do
+this.
 
 **A shallow clone must be of a tag, not a branch.** The Makefile builds
 `webserver/webtiles/version.txt` with a bare `git describe` and no fallback:
@@ -72,6 +93,8 @@ sudo apt install -y build-essential libncursesw5-dev bison flex \
 git clone --depth 1 --branch 0.34.1 --recurse-submodules --shallow-submodules \
     https://github.com/crawl/crawl.git
 cd crawl/crawl-ref/source
+make -j"$(nproc)" WEBTILES=y build-rltiles
+python3 util/status-icon-sizes-gen.py rltiles/icon-sizes.txt   # see the race above
 make -j"$(nproc)" WEBTILES=y
 python3 -m venv ~/wtenv
 ~/wtenv/bin/pip install -r webserver/requirements/base.py3.txt

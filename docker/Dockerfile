@@ -53,6 +53,23 @@ RUN git clone --depth 1 --branch "${CRAWL_REF}" --recurse-submodules --shallow-s
 
 WORKDIR /crawl/crawl-ref/source
 
+# Work around a race in crawl's own Makefile before the main build.
+#
+# `RLTILES = rltiles` has no trailing slash, so the rule meant to produce the
+# status icon sizes is written as `$(RLTILES)status-icon-sizes.js` — that is,
+# "rltilesstatus-icon-sizes.js", a filename nothing ever creates. The copy rule
+# into webserver/ needs `$(RLTILES)/status-icon-sizes.js` *with* the slash,
+# which the generator does write but which no rule declares. make therefore has
+# no rule for the file it needs, and the build only survives if that file
+# happens to exist by the time the `webserver` target is evaluated.
+#
+# Whether it does is pure scheduling luck: at -j4 the generator usually wins,
+# at -j16 it reliably loses with
+#   No rule to make target 'webserver/game_data/static/status-icon-sizes.js'
+# Running the generator up front removes the race at any core count.
+RUN make -j"$(nproc)" WEBTILES=y build-rltiles \
+    && python3 util/status-icon-sizes-gen.py rltiles/icon-sizes.txt
+
 # WEBTILES=y builds the server-side tiles binary that talks over a unix socket.
 RUN make -j"$(nproc)" WEBTILES=y
 
