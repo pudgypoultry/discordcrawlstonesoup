@@ -136,18 +136,106 @@ async def test_queued_command_reaches_the_game(server: MockWebTilesServer) -> No
         await shutdown(session, task)
 
 
-async def test_a_play_command_is_dropped_if_a_menu_opened_while_it_waited(
+async def test_a_command_still_lands_if_a_menu_opened_while_it_waited(
     server: MockWebTilesServer,
 ) -> None:
-    # The parse-time check said PLAY; by dispatch a menu is open, so `o` would
-    # land as a menu selection. It must not be sent.
+    # By default nothing is gated on context: `o` arriving while a menu is
+    # open is sent, and becomes a menu selection.
     session, queue, _, task = await running_session(server, command_interval=0.3)
     try:
         queue.put(parse(".dcss/o"), "alice")  # type: ignore[arg-type]
         session.state.handle({"msg": "ui-push", "type": "describe-item"})
         assert session.state.context is InputContext.MENU
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.6)
+        assert {"msg": "input", "text": "o"} in server.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)
+
+
+async def test_context_gating_drops_it_when_enforced(
+    server: MockWebTilesServer,
+) -> None:
+    session, queue, _, task = await running_session(
+        server, command_interval=0.3, enforce_context=True
+    )
+    try:
+        queue.put(parse(".dcss/o"), "alice")  # type: ignore[arg-type]
+        session.state.handle({"msg": "ui-push", "type": "describe-item"})
+        await asyncio.sleep(0.6)
         assert {"msg": "input", "text": "o"} not in server.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)
+
+
+async def test_dangerous_keys_stay_blocked_during_play(
+    server: MockWebTilesServer,
+) -> None:
+    # Removing context gating did not open the door to save-and-exit.
+    session, queue, _, task = await running_session(server)
+    try:
+        queue.put(parse(".dcss/select S"), "griefer")  # type: ignore[arg-type]
+        await asyncio.sleep(0.4)
+        assert {"msg": "input", "text": "S"} not in server.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)
+
+
+async def test_neutral_escapes_a_menu(server: MockWebTilesServer) -> None:
+    class PoppingServer(MockWebTilesServer):
+        """Pops one menu level per Escape, like a real nested menu."""
+
+        async def on_input(self, session: Session, obj: dict) -> None:
+            if obj.get("msg") == "key" and obj.get("keycode") == KEY_ESCAPE:
+                await self.send_batch(session, [{"msg": "ui-pop"}])
+
+    mock = PoppingServer(ping_interval=30.0)
+    await mock.start()
+    session = None
+    task = None
+    try:
+        session, queue, _, task = await running_session(mock, neutral_step_delay=0.05)
+        session.state.handle({"msg": "ui-push"})
+        session.state.handle({"msg": "ui-push"})
+        assert session.state.context is InputContext.MENU
+
+        queue.put(parse(".dcss/neutral"), "alice")  # type: ignore[arg-type]
+        await wait_until(
+            lambda: session.state.context is InputContext.PLAY,
+            what="the menus to close",
+        )
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_neutral_clears_a_more_prompt_with_a_space(
+    server: MockWebTilesServer,
+) -> None:
+    # Escape does not dismiss a --more--; only an ordinary key does.
+    session, _, _, task = await running_session(server, neutral_step_delay=0.05)
+    try:
+        session.state.handle({"msg": "msgs", "more": True, "messages": []})
+        assert session.state.context is InputContext.MORE
+        await session.escape_to_neutral(max_steps=2)
+        assert {"msg": "input", "text": " "} in server.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)
+
+
+async def test_neutral_gives_up_rather_than_hammering_keys(
+    server: MockWebTilesServer,
+) -> None:
+    # A screen that swallows everything must not turn this into a key firehose.
+    session, _, _, task = await running_session(server, neutral_step_delay=0.01)
+    try:
+        session.state.handle({"msg": "ui-push"})
+        assert not await session.escape_to_neutral(max_steps=3)
+        escapes = [
+            k for k in server.sessions[0].received_keys
+            if k.get("msg") == "key" and k.get("keycode") == KEY_ESCAPE
+        ]
+        assert len(escapes) == 3
     finally:
         await shutdown(session, task)
 

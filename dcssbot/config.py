@@ -92,6 +92,19 @@ class Config:
     per_user_cooldown: float = field(default_factory=lambda: _env_float("DCSS_USER_COOLDOWN", 0.0))
     collapse_duplicates: bool = field(default_factory=lambda: _env_bool("DCSS_COLLAPSE_DUPLICATES", False))
 
+    # -- what chat is allowed to send -------------------------------------
+    #: Off by default: any command is accepted in any context, wrong ones
+    #: included, and the game deals with the consequences. Turn it on to have
+    #: the bot drop commands that do not fit the screen that is up — quieter,
+    #: but it silently eats input, which is its own kind of confusing.
+    enforce_context: bool = field(default_factory=lambda: _env_bool("DCSS_ENFORCE_CONTEXT", False))
+    #: The one check that stays on. `S`, `~`, `&` and the Ctrl- codes end or
+    #: derail a run outright, and in an open channel one person could do that
+    #: to every run. Set true to allow them through.
+    allow_dangerous_keys: bool = field(default_factory=lambda: _env_bool("DCSS_ALLOW_DANGEROUS_KEYS", False))
+    #: Pause between the keys `.dcss/neutral` sends while backing out.
+    neutral_step_delay: float = field(default_factory=lambda: _env_float("DCSS_NEUTRAL_STEP_DELAY", 0.4))
+
     # -- log relay --------------------------------------------------------
     flush_idle: float = field(default_factory=lambda: _env_float("DCSS_FLUSH_IDLE", 1.2))
     flush_max_lines: int = field(default_factory=lambda: _env_int("DCSS_FLUSH_MAX_LINES", 18))

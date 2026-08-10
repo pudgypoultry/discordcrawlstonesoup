@@ -98,8 +98,15 @@ class DiscordRelay(discord.Client):
             return
 
         context = self.session.state.context if self.session else None
-        if context is not None and not allowed_in(parsed.command, context):
+        if context is not None and not allowed_in(
+            parsed.command, context, enforce=self.config.enforce_context
+        ):
             log.debug("dropping %s: not allowed in %s", parsed.name, context.value)
+            await self._note_no_game(message, context)
+            return
+        if context is InputContext.LOBBY:
+            # Nothing to send keys to. This is not a judgement about the
+            # command, so it is reported rather than silently swallowed.
             await self._note_no_game(message, context)
             return
 

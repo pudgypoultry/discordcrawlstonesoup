@@ -27,7 +27,7 @@ from .client import LoginFailed, WebTilesClient, WebTilesError
 from .cmdqueue import CommandQueue, QueuedCommand
 from .config import Config
 from .gamestate import STUCK_CONTEXTS, GameState, InputContext
-from .grammar import Kind, Step, is_safe_to_send
+from .grammar import Kind, Step, allowed_in, is_safe_to_send
 from .msglog import LogLine, MessageLog
 
 log = logging.getLogger(__name__)
@@ -287,11 +287,15 @@ class GameSession:
     async def _dispatch(self, item: QueuedCommand) -> None:
         context = self.state.context
         command = item.parsed.command
-        if context not in command.contexts:
-            # The situation moved on while this waited its turn.
+        if not allowed_in(command, context, enforce=self.config.enforce_context):
+            # Only reachable with DCSS_ENFORCE_CONTEXT on.
             log.debug("skipping %s: context is now %s", item.name, context.value)
             return
-        if not is_safe_to_send(item.parsed.steps, context):
+        if not is_safe_to_send(
+            item.parsed.steps,
+            context,
+            block_dangerous=not self.config.allow_dangerous_keys,
+        ):
             log.warning("refusing unsafe %s in %s", item.name, context.value)
             return
         for _ in range(item.count):
@@ -307,7 +311,40 @@ class GameSession:
                 await client.send_text(step.text)
             elif step.kind is Kind.KEYCODE:
                 await client.send_keycode(step.keycode)
+            elif step.kind is Kind.RECOVER:
+                await self.escape_to_neutral()
         self._last_send = time.monotonic()
+
+    async def escape_to_neutral(self, max_steps: int = 10) -> bool:
+        """Back out of whatever is on screen until normal play resumes.
+
+        One Escape is often not enough — menus nest, and a ``--more--`` ignores
+        Escape entirely and wants a space. So this looks at what is actually up
+        after each key rather than sending a fixed sequence, and stops as soon
+        as the game is taking commands again.
+        """
+        client = self.client
+        if client is None or not client.connected:
+            return False
+        for _ in range(max_steps):
+            context = self.state.context
+            if context in (InputContext.PLAY, InputContext.LOBBY):
+                return True
+            if context is InputContext.MORE:
+                # Escape does not clear a --more--; any ordinary key does.
+                await client.send_text(" ")
+            else:
+                # Escape cancels menus, prompts, targeting and text fields, and
+                # answers no to a yes/no question.
+                await client.send_escape()
+            await asyncio.sleep(self.config.neutral_step_delay)
+        settled = self.state.context in (InputContext.PLAY, InputContext.LOBBY)
+        if not settled:
+            log.warning(
+                "could not get back to normal play; still in %s",
+                self.state.context.value,
+            )
+        return settled
 
     # -- resilience -------------------------------------------------------
 
@@ -334,16 +371,11 @@ class GameSession:
                 continue
             last_escape = time.monotonic()
             log.info(
-                "stuck in %s for %.0fs, sending Escape",
+                "stuck in %s for %.0fs, backing out",
                 self.state.context.value,
                 self.state.context_age,
             )
-            client = self.client
-            if client is not None and client.connected:
-                await client.send_escape()
-                # Escape alone does not clear a --more--; a space does.
-                if self.state.context is InputContext.MORE:
-                    await client.send_text(" ")
+            await self.escape_to_neutral()
 
     async def _restart_after_death(self) -> None:
         """Start a fresh character once the previous run is over.

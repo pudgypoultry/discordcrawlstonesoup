@@ -44,6 +44,9 @@ class Kind(Enum):
     SEQUENCE = "sequence"
     #: Handled by the bot itself, never sent to the game.
     META = "meta"
+    #: Back out of whatever is on screen until normal play resumes. The keys
+    #: depend on what is up at the time, so the session drives it.
+    RECOVER = "recover"
 
 
 #: Contexts in which ordinary play commands are accepted.
@@ -210,6 +213,12 @@ _COMMAND_LIST += [
         "type into a text field, e.g. `.dcss/text hello`",
         takes_argument=True,
     ),
+    _cmd(
+        "neutral",
+        (Step(Kind.RECOVER),),
+        set(InputContext),
+        "back out of any menu or prompt until normal play resumes",
+    ),
     # -- bot commands ------------------------------------------------------
     _cmd("link", (), set(InputContext), "post the spectate link", meta=True),
     _cmd("status", (), set(InputContext), "post the current status line", meta=True),
@@ -319,9 +328,16 @@ def _parse_argument(command: Command, argument: str) -> ParsedCommand:
     raise ParseError(f"`{command.name}` does not take an argument")
 
 
-def allowed_in(command: Command, context: InputContext) -> bool:
-    """Whether the grammar permits this command in this context."""
-    if command.meta:
+def allowed_in(command: Command, context: InputContext, *, enforce: bool = True) -> bool:
+    """Whether this command may be sent in this context.
+
+    With ``enforce`` false — the default the bot runs with — everything is
+    allowed everywhere: a movement key pressed into an open menu is a menu
+    selection, and that is the player's problem, not the bot's. Dropping such
+    commands silently turned out to be worse than letting them land, because a
+    command that vanishes is indistinguishable from a broken bot.
+    """
+    if command.meta or not enforce:
         return True
     if context is InputContext.UNKNOWN:
         # Better to hold a key than to guess wrong about an open menu.
@@ -329,13 +345,19 @@ def allowed_in(command: Command, context: InputContext) -> bool:
     return context in command.contexts
 
 
-def is_safe_to_send(steps: Iterable[Step], context: InputContext) -> bool:
-    """Final check, applied at dispatch time rather than at parse time.
+def is_safe_to_send(
+    steps: Iterable[Step], context: InputContext, *, block_dangerous: bool = True
+) -> bool:
+    """Whether these keystrokes may be written to the game.
 
-    The context can change while a command sits in the queue, so the dangerous
-    characters are re-checked against the context that actually applies.
+    This is not a check on whether a command *makes sense* — anything may be
+    sent anywhere. It only keeps the handful of keys that end or derail a run
+    (`S` save-and-exit, `~` macros, `&` wizard mode, the Ctrl- codes) from
+    reaching the dungeon, since in an open channel one person could otherwise
+    end every run at will. Only applies during normal play, where those keys
+    have that meaning; inside a menu `S` is just an item slot.
     """
-    if context is not InputContext.PLAY:
+    if not block_dangerous or context is not InputContext.PLAY:
         return True
     return not any(
         ch in DANGEROUS_PLAY_CHARS
@@ -387,8 +409,8 @@ def help_text(prefix: str = ".dcss/") -> str:
             [
                 f"{prefix}{n}"
                 for n in (
-                    "esc", "enter", "space", "yes", "no", "more", "select <x>",
-                    "text <words>", "scrollup", "scrolldown", "1"
+                    "esc", "enter", "space", "yes", "no", "more", "neutral",
+                    "select <x>", "text <words>", "scrollup", "scrolldown", "1",
                 )
             ],
         ),

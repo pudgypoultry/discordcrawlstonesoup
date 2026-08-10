@@ -110,13 +110,30 @@ async def test_bot_messages_are_ignored() -> None:
     assert len(queue) == 0
 
 
-async def test_a_command_wrong_for_the_context_is_dropped_silently() -> None:
+async def test_a_command_wrong_for_the_context_is_still_sent() -> None:
+    # Any key, any time. `o` while a menu is open is a menu selection, and
+    # that is the channel's problem to sort out — dropping it silently was
+    # indistinguishable from the bot being broken.
     relay, queue = make_relay()
     relay.session.state.handle({"msg": "ui-push"})
     message = FakeMessage(".dcss/o")
     await relay.on_message(message)
-    assert len(queue) == 0
+    assert [item.name for item in queue] == ["o"]
     assert message.channel.sent == []
+
+
+async def test_context_gating_can_be_turned_back_on() -> None:
+    relay, queue = make_relay(enforce_context=True)
+    relay.session.state.handle({"msg": "ui-push"})
+    await relay.on_message(FakeMessage(".dcss/o"))
+    assert len(queue) == 0
+
+
+async def test_neutral_is_accepted_in_any_context() -> None:
+    relay, queue = make_relay()
+    relay.session.state.handle({"msg": "ui-push"})
+    await relay.on_message(FakeMessage(".dcss/neutral"))
+    assert [item.name for item in queue] == ["neutral"]
 
 
 async def test_an_unknown_command_gets_one_reply_then_goes_quiet() -> None:
