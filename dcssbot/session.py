@@ -70,6 +70,13 @@ class GameSession:
         #: simply has not started yet, and the bot looks broken rather than
         #: misconfigured.
         self.last_error: str | None = None
+        #: What the session is currently trying to reach, and since when. A
+        #: connect that hangs instead of failing fast reports no error at all,
+        #: so without this the only thing status could say was "still
+        #: connecting" — true, useless, and indistinguishable from a firewall
+        #: quietly dropping the packets.
+        self.connect_target: str | None = None
+        self.connect_started: float | None = None
 
         self._stop = asyncio.Event()
         self._game_over = asyncio.Event()
@@ -86,6 +93,23 @@ class GameSession:
         if not self.state.in_game:
             return None
         return self.config.spectate_url(self.username or self.config.username)
+
+    def why_not_running(self) -> str:
+        """One line explaining why there is no game, for `.dcss/status`."""
+        if self.last_error:
+            return self.last_error
+        if self.connect_started is not None:
+            waited = time.monotonic() - self.connect_started
+            where = self.connect_target or self.config.websocket_url
+            if waited > 25:
+                return (
+                    f"still trying to reach {where} after {waited:.0f}s — that is "
+                    "far longer than a connection should take. Check DCSS_WS_URL, "
+                    "that the crawl server is listening on that address, and that "
+                    "nothing is silently dropping the connection."
+                )
+            return f"connecting to {where} ({waited:.0f}s so far)"
+        return "the game side has not started connecting yet"
 
     async def stop(self) -> None:
         self._stop.set()
@@ -148,6 +172,8 @@ class GameSession:
             self.config.username,
             self.config.game_id,
         )
+        self.connect_target = self.config.websocket_url
+        self.connect_started = time.monotonic()
         await client.start()
         log.info("connected, logging in")
         try:
@@ -188,6 +214,7 @@ class GameSession:
                 "ids this server offers."
             )
         self.last_error = None
+        self.connect_started = None
         self._game_over.clear()
 
     def _register_handlers(self, client: WebTilesClient) -> None:

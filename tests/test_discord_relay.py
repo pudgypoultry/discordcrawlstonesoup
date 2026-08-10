@@ -57,9 +57,13 @@ class FakeSession:
             self.state.handle({"msg": "ui-push"})
         self._url: str | None = "https://crawl.example/#watch-testbot"
         self.last_error: str | None = None
+        self._why = "connecting to ws://127.0.0.1:8080/socket (2s so far)"
 
     def spectate_url(self) -> str | None:
         return self._url
+
+    def why_not_running(self) -> str:
+        return self.last_error or self._why
 
 
 def make_relay(**overrides) -> tuple[DiscordRelay, CommandQueue]:
@@ -240,4 +244,5 @@ async def test_status_without_an_error_says_it_is_still_connecting() -> None:
     relay.session.last_error = None
     channel = FakeChannel()
     await relay.on_message(FakeMessage(".dcss/status", channel=channel))
-    assert "still connecting" in channel.sent[0]
+    # Names the address it is trying, not a bare "still connecting".
+    assert "ws://127.0.0.1:8080/socket" in channel.sent[0]
