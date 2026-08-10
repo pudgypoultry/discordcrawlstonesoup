@@ -18,6 +18,18 @@ export DCSS_GAME_ID=dcss-web-trunk
 
 The build compiles crawl from source and takes 10–30 minutes.
 
+These steps were run end to end on `ubuntu:24.04` — the image's own base — and
+the resulting server was driven with `scripts/probe.py`: log in, list games,
+start a game, answer character creation with `#` and `*`, auto-explore, and
+relay the log. The behaviour the bot depends on is what real crawl does:
+
+* the species screen arrives as `ui-push` while `input_mode` still reports
+  `COMMAND`, which is exactly why the UI stack is tracked separately
+* `#` picks a recommended combination and the following screen accepts `*`,
+  matching `newgame.cc`
+* replaying `play` for an account with a save resumes it ("Welcome back")
+  rather than starting a new character
+
 ## Two things the build needs that are easy to miss
 
 Both of these were wrong here first time round, so they are worth stating.
