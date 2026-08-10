@@ -56,6 +56,7 @@ class FakeSession:
         if context is InputContext.MENU:
             self.state.handle({"msg": "ui-push"})
         self._url: str | None = "https://crawl.example/#watch-testbot"
+        self.last_error: str | None = None
 
     def spectate_url(self) -> str | None:
         return self._url
@@ -220,3 +221,23 @@ async def test_ordinary_context_churn_stays_silent() -> None:
     for _ in range(5):
         await relay.on_message(FakeMessage(".dcss/o", channel=channel))
     assert channel.sent == []
+
+
+async def test_status_surfaces_why_the_game_side_is_down() -> None:
+    # "No game running" alone cannot be acted on: a rejected login looks
+    # exactly like a game that has not started yet.
+    relay, _ = make_relay()
+    relay.session.state.handle({"msg": "game_ended", "reason": "quit"})
+    relay.session.last_error = "login rejected for user 'testbot'"
+    channel = FakeChannel()
+    await relay.on_message(FakeMessage(".dcss/status", channel=channel))
+    assert "login rejected for user 'testbot'" in channel.sent[0]
+
+
+async def test_status_without_an_error_says_it_is_still_connecting() -> None:
+    relay, _ = make_relay()
+    relay.session.state.handle({"msg": "game_ended", "reason": "quit"})
+    relay.session.last_error = None
+    channel = FakeChannel()
+    await relay.on_message(FakeMessage(".dcss/status", channel=channel))
+    assert "still connecting" in channel.sent[0]

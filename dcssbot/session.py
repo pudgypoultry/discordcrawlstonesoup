@@ -65,6 +65,11 @@ class GameSession:
         self.log = MessageLog()
         self.client: WebTilesClient | None = None
         self.username: str | None = None
+        #: Why the game side is not up, if it is not. Surfaced by `.dcss/status`
+        #: — without it a rejected login is indistinguishable from a game that
+        #: simply has not started yet, and the bot looks broken rather than
+        #: misconfigured.
+        self.last_error: str | None = None
 
         self._stop = asyncio.Event()
         self._game_over = asyncio.Event()
@@ -96,12 +101,21 @@ class GameSession:
                 await self._connect_and_play(reconnect=not first)
                 delay = self.config.reconnect_delay
             except LoginFailed as exc:
-                log.error("login rejected: %s", exc)
-                await self.on_event(GameEvent("error", f"login rejected: {exc}"))
+                # Retrying rejected credentials is pointless and, on a public
+                # server, a good way to get an account locked. Stop, but leave
+                # the reason where `.dcss/status` can find it.
+                self.last_error = (
+                    f"login rejected for user {self.config.username!r}: {exc}. "
+                    "Check DCSS_USERNAME/DCSS_PASSWORD, and that the account "
+                    "exists on this server."
+                )
+                log.error("%s", self.last_error)
+                await self.on_event(GameEvent("error", self.last_error))
                 return
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
                 log.warning("session ended: %s", exc, exc_info=log.isEnabledFor(logging.DEBUG))
             finally:
                 first = False
@@ -168,7 +182,12 @@ class GameSession:
         reply = await self.client.play(self.config.game_id)
         kind = reply.get("msg")
         if kind != "game_started":
-            raise WebTilesError(f"could not start game: server replied {kind!r}")
+            raise WebTilesError(
+                f"could not start game {self.config.game_id!r}: server replied "
+                f"{kind!r}. Check DCSS_GAME_ID — `probe.py --games` lists the "
+                "ids this server offers."
+            )
+        self.last_error = None
         self._game_over.clear()
 
     def _register_handlers(self, client: WebTilesClient) -> None:

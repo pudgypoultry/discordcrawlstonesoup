@@ -127,7 +127,10 @@ class DiscordRelay(discord.Client):
             return "Not connected yet."
         state = self.session.state
         if not state.in_game:
-            return "No game running."
+            reason = getattr(self.session, "last_error", None)
+            if reason:
+                return f"No game running — {reason}"
+            return "No game running (the game side is still connecting)."
         status = state.status_line() or "no player data yet"
         return f"`{status}` — waiting on: {state.context.value}, {self.queue.summary()}"
 
