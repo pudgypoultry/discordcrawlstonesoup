@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,51 @@ INTERESTING = {
     "login_fail",
     "player",
 }
+
+
+#: `set_game_links` carries rendered HTML whose hrefs hold the ids that `play`
+#: expects. There is no cleaner listing in the protocol.
+_PLAY_HREF = re.compile(r"#play-([A-Za-z0-9_.-]+)")
+
+
+async def list_games(args: argparse.Namespace) -> int:
+    """Log in and print the game ids this server offers."""
+    client = WebTilesClient(args.url, compression=args.compression)
+    seen: list[str] = []
+    arrived = asyncio.Event()
+
+    def collect(msg: dict[str, Any]) -> None:
+        for game_id in _PLAY_HREF.findall(str(msg.get("content", ""))):
+            if game_id not in seen:
+                seen.append(game_id)
+        arrived.set()
+
+    # Registered before login, because the lobby sends this as part of the
+    # login response — a waiter set up afterwards would already have missed it.
+    client.on("set_game_links", collect)
+
+    print(f"connecting to {args.url}")
+    await client.start()
+    try:
+        username = await client.login(args.username, args.password)
+        print(f"logged in as {username}\n")
+        try:
+            await asyncio.wait_for(arrived.wait(), timeout=15.0)
+        except asyncio.TimeoutError:
+            print("server never sent set_game_links")
+            return 1
+        # A real server fills the list in asynchronously as it collects save
+        # info, so give the follow-up renders a moment to land.
+        await asyncio.sleep(2.0)
+        if not seen:
+            print("no games advertised for this account")
+            return 1
+        print("available game ids (use with DCSS_GAME_ID):")
+        for game_id in seen:
+            print(f"  {game_id}")
+    finally:
+        await client.close()
+    return 0
 
 
 async def probe(args: argparse.Namespace) -> int:
@@ -136,6 +182,11 @@ def main() -> int:
     parser.add_argument("--all", action="store_true", help="print every message type")
     parser.add_argument("--raw", action="store_true", help="do not prettify msgs")
     parser.add_argument(
+        "--games",
+        action="store_true",
+        help="log in, print the game ids this server offers, and exit",
+    )
+    parser.add_argument(
         "--compression",
         action="store_true",
         help="use compressed frames instead of the no-compression subprotocol",
@@ -144,7 +195,7 @@ def main() -> int:
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
     with contextlib.suppress(KeyboardInterrupt):
-        return asyncio.run(probe(args))
+        return asyncio.run(list_games(args) if args.games else probe(args))
     return 0
 
 
