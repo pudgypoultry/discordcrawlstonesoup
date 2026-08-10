@@ -118,6 +118,7 @@ class GameSession:
 
     async def run(self) -> None:
         """Connect, play, and reconnect until stopped."""
+        log.info("game session starting")
         delay = self.config.reconnect_delay
         first = True
         while not self._stop.is_set():

@@ -59,16 +59,22 @@ async def run(config: Config) -> None:
     session = GameSession(config, queue, on_lines=on_lines, on_event=on_event)
     relay.session = session
 
+    # Both sides start straight away. The game side used to wait for Discord to
+    # be ready first, so that opening log lines were not written into a void —
+    # but `relay.post` already waits on that itself, so the gate bought nothing
+    # and made the game connection depend on the gateway coming up. When it did
+    # not, the bot sat there with no game and nothing in the log to say why.
     discord_task = asyncio.create_task(relay.start(config.discord_token), name="discord")
-    # Hold the game connection until Discord is up, so the opening lines of the
-    # run are not written into a void.
-    await relay.wait_ready()
     session_task = asyncio.create_task(session.run(), name="session")
+    log.info("started the discord and game session tasks")
 
     tasks = [discord_task, session_task]
     try:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:
+            # Whichever side stops first ends the run; say which, because
+            # "the bot exited" on its own explains nothing.
+            log.warning("the %s task finished, shutting down", task.get_name())
             exc = task.exception()
             if exc is not None:
                 raise exc
