@@ -83,10 +83,15 @@ def test_text_cursor_in_a_menu_is_text_entry() -> None:
     assert state.context is InputContext.TEXT_ENTRY
 
 
-def test_text_cursor_during_play_is_not_text_entry() -> None:
-    # The message pane shows a cursor during ordinary play; that is not a form.
+def test_a_message_line_prompt_counts_as_text_entry() -> None:
+    # Verified against crawl 0.34.1: Ctrl-F emits input_mode 0 and
+    # text_cursor enabled, with nothing on the UI stack. Treating that as
+    # ordinary play meant later keys were typed into the search box.
     state = make_playing()
+    state.handle({"msg": "input_mode", "mode": MouseMode.NORMAL})
     state.handle({"msg": "text_cursor", "enabled": True})
+    assert state.context is InputContext.TEXT_ENTRY
+    state.handle({"msg": "text_cursor", "enabled": False})
     assert state.context is InputContext.PLAY
 
 

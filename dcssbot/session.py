@@ -294,7 +294,7 @@ class GameSession:
         if not is_safe_to_send(
             item.parsed.steps,
             context,
-            block_dangerous=not self.config.allow_dangerous_keys,
+            block_dangerous=self.config.block_dangerous_keys,
         ):
             log.warning("refusing unsafe %s in %s", item.name, context.value)
             return

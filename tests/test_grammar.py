@@ -1,4 +1,9 @@
-"""The grammar is the security boundary for an open channel."""
+"""What chat is allowed to send.
+
+Any single printable character is sent as itself; keys with no character need
+a name. Nothing is filtered for making sense — sending `o` into an open menu
+is allowed, and the game decides what that means.
+"""
 
 from __future__ import annotations
 
@@ -8,13 +13,15 @@ from dcssbot.gamestate import InputContext
 from dcssbot.grammar import (
     COMMANDS,
     DANGEROUS_PLAY_CHARS,
+    DIRECTIONS,
     Kind,
     ParseError,
     allowed_in,
+    help_text,
     is_safe_to_send,
     parse,
 )
-from dcssbot.keys import KEY_ESCAPE, KEY_TAB
+from dcssbot.keys import CK_UP, KEY_ESCAPE, KEY_TAB, ctrl
 
 
 def test_non_command_messages_are_ignored_silently() -> None:
@@ -22,38 +29,66 @@ def test_non_command_messages_are_ignored_silently() -> None:
     assert parse("") is None
 
 
-def test_prefix_is_case_insensitive() -> None:
-    assert parse(".DCSS/o") is not None
+# -- single characters ----------------------------------------------------
 
 
-def test_literal_character_command() -> None:
-    parsed = parse(".dcss/o")
+@pytest.mark.parametrize("char", ["o", "z", "S", "W", "5", "0", "#", "*", "<", ">", "%", "?"])
+def test_any_printable_character_is_sent_as_itself(char: str) -> None:
+    parsed = parse(f".dcss/{char}")
     assert parsed is not None
-    assert [(s.kind, s.text) for s in parsed.steps] == [(Kind.TEXT, "o")]
+    assert [(s.kind, s.text) for s in parsed.steps] == [(Kind.TEXT, char)]
 
 
-def test_keycode_command() -> None:
-    parsed = parse(".dcss/tab")
+def test_character_case_is_preserved() -> None:
+    # `S` must stay `S`; lowercasing it would turn save-and-exit into "wait".
+    assert parse(".dcss/S").steps[0].text == "S"  # type: ignore[union-attr]
+    assert parse(".dcss/s").steps[0].text == "s"  # type: ignore[union-attr]
+
+
+def test_a_single_character_takes_no_argument() -> None:
+    with pytest.raises(ParseError):
+        parse(".dcss/o explore please")
+
+
+def test_a_bare_prefix_is_an_error() -> None:
+    with pytest.raises(ParseError):
+        parse(".dcss/")
+
+
+# -- named keys -----------------------------------------------------------
+
+
+def test_keys_without_a_character_need_a_name() -> None:
+    assert parse(".dcss/tab").steps[0].keycode == KEY_TAB  # type: ignore[union-attr]
+    assert parse(".dcss/esc").steps[0].keycode == KEY_ESCAPE  # type: ignore[union-attr]
+    assert parse(".dcss/arrowup").steps[0].keycode == CK_UP  # type: ignore[union-attr]
+
+
+def test_named_keys_are_case_insensitive() -> None:
+    assert parse(".dcss/TAB").steps[0].keycode == KEY_TAB  # type: ignore[union-attr]
+
+
+def test_ctrl_takes_a_letter() -> None:
+    parsed = parse(".dcss/ctrl f")
     assert parsed is not None
-    assert parsed.steps[0].kind is Kind.KEYCODE
-    assert parsed.steps[0].keycode == KEY_TAB
+    assert parsed.steps[0].keycode == ctrl("f") == 6
 
 
-def test_escape_is_a_keycode_not_a_character() -> None:
-    parsed = parse(".dcss/esc")
-    assert parsed is not None
-    assert parsed.steps[0].keycode == KEY_ESCAPE
+@pytest.mark.parametrize("bad", ["ff", "1", ""])
+def test_ctrl_rejects_anything_but_one_letter(bad: str) -> None:
+    with pytest.raises(ParseError):
+        parse(f".dcss/ctrl {bad}".strip())
 
 
-def test_direction_names_map_to_vi_keys() -> None:
-    assert parse(".dcss/n").steps[0].text == "k"  # type: ignore[union-attr]
+def test_directions_are_words_because_letters_are_literal() -> None:
+    # `.dcss/n` is the character `n`, so north has to spell itself out.
+    assert parse(".dcss/north").steps[0].text == "k"  # type: ignore[union-attr]
+    assert parse(".dcss/n").steps[0].text == "n"  # type: ignore[union-attr]
     assert parse(".dcss/se").steps[0].text == "n"  # type: ignore[union-attr]
 
 
-def test_run_takes_a_direction_and_shifts_it() -> None:
-    parsed = parse(".dcss/run ne")
-    assert parsed is not None
-    assert parsed.steps[0].text == "U"
+def test_run_shifts_a_direction() -> None:
+    assert parse(".dcss/run ne").steps[0].text == "U"  # type: ignore[union-attr]
 
 
 def test_run_rejects_a_non_direction() -> None:
@@ -61,67 +96,26 @@ def test_run_rejects_a_non_direction() -> None:
         parse(".dcss/run away")
 
 
-def test_unknown_token_raises() -> None:
+def test_unknown_word_raises() -> None:
     with pytest.raises(ParseError, match="unknown command"):
         parse(".dcss/notacommand")
 
 
-def test_bare_prefix_raises() -> None:
-    with pytest.raises(ParseError):
-        parse(".dcss/")
-
-
-def test_argument_on_a_command_that_takes_none_raises() -> None:
-    with pytest.raises(ParseError, match="takes no argument"):
-        parse(".dcss/o extra")
-
-
 def test_error_message_does_not_echo_markdown() -> None:
-    # The unknown token goes back into a Discord message; it must not carry
-    # formatting or a mention through with it.
     with pytest.raises(ParseError) as exc:
         parse(".dcss/@everyone**x**")
     assert "@" not in str(exc.value)
     assert "*" not in str(exc.value)
 
 
-# -- the dangerous keys ---------------------------------------------------
-
-
-@pytest.mark.parametrize("char", sorted(DANGEROUS_PLAY_CHARS))
-def test_no_command_produces_a_dangerous_character(char: str) -> None:
-    for command in COMMANDS.values():
-        for step in command.steps:
-            assert char not in step.text
-
-
-def test_there_is_no_generic_send_a_key_command() -> None:
-    # An allowlist only holds if nothing in it forwards arbitrary input.
-    free_form = {name for name, c in COMMANDS.items() if c.takes_argument}
-    assert free_form == {"run", "select", "text"}
-
-
-@pytest.mark.parametrize("payload", ["~", "&", "Sx", "a b", "<", ";"])
-def test_select_refuses_anything_but_one_menu_key(payload: str) -> None:
-    with pytest.raises(ParseError):
-        parse(f".dcss/select {payload}")
-
-
-def test_select_accepts_a_menu_letter_and_crawl_menu_symbols() -> None:
-    assert parse(".dcss/select b").steps[0].text == "b"  # type: ignore[union-attr]
-    assert parse(".dcss/select *").steps[0].text == "*"  # type: ignore[union-attr]
-
-
-def test_select_allows_capital_s_but_only_inside_a_menu() -> None:
-    # `S` is an ordinary inventory slot, so refusing it would break menus. It
-    # is dangerous only during play, and two independent checks cover that:
-    # the context gate, and the dispatch-time character check.
-    parsed = parse(".dcss/select S")
+def test_neutral_is_a_recovery_step() -> None:
+    parsed = parse(".dcss/neutral")
     assert parsed is not None
-    assert parsed.steps[0].text == "S"
-    assert allowed_in(parsed.command, InputContext.MENU)
-    assert not allowed_in(parsed.command, InputContext.PLAY)
-    assert not is_safe_to_send(parsed.steps, InputContext.PLAY)
+    assert parsed.steps[0].kind is Kind.RECOVER
+
+
+def test_text_accepts_a_plain_name() -> None:
+    assert parse(".dcss/text Sigmund the Second").steps[0].text == "Sigmund the Second"  # type: ignore[union-attr]
 
 
 @pytest.mark.parametrize("payload", ["~x", "hello&", "a" * 40, "<lightred>"])
@@ -130,52 +124,80 @@ def test_text_rejects_markup_and_overlong_input(payload: str) -> None:
         parse(f".dcss/text {payload}")
 
 
-def test_text_accepts_a_plain_name() -> None:
-    parsed = parse(".dcss/text Sigmund the Second")
-    assert parsed is not None
-    assert parsed.steps[0].text == "Sigmund the Second"
+# -- no validity filtering ------------------------------------------------
 
 
-# -- context gating -------------------------------------------------------
+def test_commands_are_allowed_in_every_context_by_default() -> None:
+    for name in ("explore", "quaff", "tab", "north"):
+        for context in InputContext:
+            assert allowed_in(COMMANDS[name], context, enforce=False)
 
 
-def test_play_command_is_not_allowed_in_a_menu() -> None:
-    # The whole point of tracking the UI stack: `o` in an open menu is a
-    # selection, not auto-explore.
-    assert not allowed_in(COMMANDS["o"], InputContext.MENU)
-    assert allowed_in(COMMANDS["o"], InputContext.PLAY)
+def test_context_gating_still_works_when_asked_for() -> None:
+    assert not allowed_in(COMMANDS["explore"], InputContext.MENU, enforce=True)
+    assert allowed_in(COMMANDS["explore"], InputContext.PLAY, enforce=True)
 
 
-def test_select_is_not_allowed_during_play() -> None:
-    assert not allowed_in(COMMANDS["select"], InputContext.PLAY)
-    assert allowed_in(COMMANDS["select"], InputContext.MENU)
-
-
-def test_text_is_only_allowed_in_a_text_field() -> None:
-    assert allowed_in(COMMANDS["text"], InputContext.TEXT_ENTRY)
-    for context in (InputContext.PLAY, InputContext.MENU, InputContext.MORE):
-        assert not allowed_in(COMMANDS["text"], context)
-
-
-def test_nothing_is_allowed_in_an_unknown_context() -> None:
-    assert not allowed_in(COMMANDS["o"], InputContext.UNKNOWN)
-
-
-def test_meta_commands_work_anywhere() -> None:
-    for context in InputContext:
-        assert allowed_in(COMMANDS["help"], context)
-
-
-def test_dispatch_time_check_blocks_dangerous_text_reaching_play() -> None:
-    # `text` is gated to TEXT_ENTRY at parse time, but the context can change
-    # while the command waits in the queue, so it is re-checked at dispatch.
-    parsed = parse(".dcss/text Save me")
-    assert parsed is not None
-    assert is_safe_to_send(parsed.steps, InputContext.TEXT_ENTRY)
-    assert not is_safe_to_send(parsed.steps, InputContext.PLAY)
-
-
-def test_dispatch_time_check_passes_ordinary_commands() -> None:
-    parsed = parse(".dcss/o")
+def test_dangerous_keys_pass_by_default() -> None:
+    # `S` is a printable character, so it goes through like any other.
+    parsed = parse(".dcss/S")
     assert parsed is not None
     assert is_safe_to_send(parsed.steps, InputContext.PLAY)
+
+
+def test_dangerous_keys_can_be_blocked_during_play() -> None:
+    parsed = parse(".dcss/S")
+    assert parsed is not None
+    assert not is_safe_to_send(parsed.steps, InputContext.PLAY, block_dangerous=True)
+    # Inside a menu `S` is just an item slot, so it is never blocked there.
+    assert is_safe_to_send(parsed.steps, InputContext.MENU, block_dangerous=True)
+
+
+@pytest.mark.parametrize("char", sorted(DANGEROUS_PLAY_CHARS - set("\x11\x18\x13")))
+def test_every_dangerous_character_is_reachable(char: str) -> None:
+    parsed = parse(f".dcss/{char}")
+    assert parsed is not None
+    assert parsed.steps[0].text == char
+
+
+# -- help -----------------------------------------------------------------
+
+
+def test_help_pairs_each_named_command_with_its_key() -> None:
+    text = help_text()
+    assert "`.dcss/north` → `k`" in text
+    assert "`.dcss/tab` → `Tab`" in text
+    assert "`.dcss/explore` → `o`" in text
+    assert "`.dcss/quaff` → `q`" in text
+
+
+def test_help_explains_that_single_keys_work_alone() -> None:
+    assert "Any single key works on its own" in help_text()
+
+
+def test_help_honours_a_custom_prefix() -> None:
+    assert "`!crawl north` → `k`" in help_text("!crawl ")
+
+
+def test_help_lists_no_key_for_bot_commands() -> None:
+    # `.dcss/help` sends no keystroke, so pairing it with one would be a lie.
+    assert "`.dcss/help`," in help_text() or "`.dcss/help`" in help_text()
+    assert "`.dcss/help` →" not in help_text()
+
+
+def test_every_named_command_that_sends_keys_declares_one() -> None:
+    for command in COMMANDS.values():
+        if command.meta:
+            continue
+        assert command.key, f"{command.name} has no key label for help"
+
+
+def test_every_direction_is_in_help() -> None:
+    text = help_text()
+    for name in DIRECTIONS:
+        assert f"`.dcss/{name}`" in text
+
+
+def test_help_fits_in_one_discord_message() -> None:
+    # Discord hard-caps a message at 2000 characters; help is posted as one.
+    assert len(help_text()) < 1900

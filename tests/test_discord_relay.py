@@ -83,10 +83,18 @@ def make_relay(**overrides) -> tuple[DiscordRelay, CommandQueue]:
     return relay, queue
 
 
-async def test_a_valid_command_is_queued() -> None:
+async def test_a_single_key_is_queued() -> None:
     relay, queue = make_relay()
     await relay.on_message(FakeMessage(".dcss/o"))
-    assert [item.name for item in queue] == ["o"]
+    item = queue.get_nowait()
+    assert item is not None
+    assert [s.text for s in item.parsed.steps] == ["o"]
+
+
+async def test_a_named_command_is_queued() -> None:
+    relay, queue = make_relay()
+    await relay.on_message(FakeMessage(".dcss/explore"))
+    assert [item.name for item in queue] == ["explore"]
 
 
 async def test_ordinary_chat_is_ignored() -> None:
@@ -116,16 +124,16 @@ async def test_a_command_wrong_for_the_context_is_still_sent() -> None:
     # indistinguishable from the bot being broken.
     relay, queue = make_relay()
     relay.session.state.handle({"msg": "ui-push"})
-    message = FakeMessage(".dcss/o")
+    message = FakeMessage(".dcss/explore")
     await relay.on_message(message)
-    assert [item.name for item in queue] == ["o"]
+    assert [item.name for item in queue] == ["explore"]
     assert message.channel.sent == []
 
 
 async def test_context_gating_can_be_turned_back_on() -> None:
     relay, queue = make_relay(enforce_context=True)
     relay.session.state.handle({"msg": "ui-push"})
-    await relay.on_message(FakeMessage(".dcss/o"))
+    await relay.on_message(FakeMessage(".dcss/explore"))
     assert len(queue) == 0
 
 
@@ -152,7 +160,7 @@ async def test_help_is_rate_limited() -> None:
     await relay.on_message(FakeMessage(".dcss/help", channel=channel))
     await relay.on_message(FakeMessage(".dcss/help", channel=channel))
     assert len(channel.sent) == 1
-    assert ".dcss/o" in channel.sent[0]
+    assert ".dcss/explore" in channel.sent[0]
 
 
 async def test_link_posts_the_spectate_url() -> None:
@@ -187,29 +195,37 @@ async def test_meta_commands_are_never_queued() -> None:
     assert len(queue) == 0
 
 
-@pytest.mark.parametrize("content", [".dcss/save", ".dcss/quit", ".dcss/~", ".dcss/&"])
-async def test_dangerous_looking_tokens_never_queue_anything(content: str) -> None:
+@pytest.mark.parametrize("content", [".dcss/save", ".dcss/quit", ".dcss/nonsense"])
+async def test_unknown_words_queue_nothing(content: str) -> None:
     relay, queue = make_relay()
     await relay.on_message(FakeMessage(content))
     assert len(queue) == 0
 
 
-async def test_case_folding_cannot_produce_a_dangerous_key() -> None:
-    # Tokens are matched case-insensitively, so `.dcss/S` resolves to the
-    # south movement command. It must send `j`, never a literal `S`.
+@pytest.mark.parametrize("char", ["S", "~", "&", "#"])
+async def test_every_printable_character_reaches_the_queue(char: str) -> None:
+    # Deliberate: any key at any time. `S` is save-and-exit, and that is the
+    # channel's business now, not the bot's.
+    relay, queue = make_relay()
+    await relay.on_message(FakeMessage(f".dcss/{char}"))
+    item = queue.get_nowait()
+    assert item is not None
+    assert [step.text for step in item.parsed.steps] == [char]
+
+
+async def test_character_case_survives_the_relay() -> None:
     relay, queue = make_relay()
     await relay.on_message(FakeMessage(".dcss/S"))
     item = queue.get_nowait()
     assert item is not None
-    assert item.name == "s"
-    assert [step.text for step in item.parsed.steps] == ["j"]
+    assert [step.text for step in item.parsed.steps] == ["S"]
 
 
 async def test_a_custom_prefix_is_honoured() -> None:
     relay, queue = make_relay(command_prefix="!crawl ")
-    await relay.on_message(FakeMessage("!crawl o"))
-    assert [item.name for item in queue] == ["o"]
-    await relay.on_message(FakeMessage(".dcss/o"))
+    await relay.on_message(FakeMessage("!crawl explore"))
+    assert [item.name for item in queue] == ["explore"]
+    await relay.on_message(FakeMessage(".dcss/explore"))
     assert len(queue) == 1
 
 
@@ -219,7 +235,7 @@ async def test_a_dropped_command_says_so_when_no_game_is_running() -> None:
     relay, queue = make_relay()
     relay.session.state.handle({"msg": "game_ended", "reason": "quit"})
     channel = FakeChannel()
-    await relay.on_message(FakeMessage(".dcss/o", channel=channel))
+    await relay.on_message(FakeMessage(".dcss/explore", channel=channel))
     assert len(queue) == 0
     assert "No game is running" in channel.sent[0]
 
@@ -229,7 +245,7 @@ async def test_the_no_game_notice_is_rate_limited() -> None:
     relay.session.state.handle({"msg": "game_ended", "reason": "quit"})
     channel = FakeChannel()
     for _ in range(5):
-        await relay.on_message(FakeMessage(".dcss/o", channel=channel))
+        await relay.on_message(FakeMessage(".dcss/explore", channel=channel))
     assert len(channel.sent) == 1
 
 
@@ -240,7 +256,7 @@ async def test_ordinary_context_churn_stays_silent() -> None:
     relay.session.state.handle({"msg": "ui-push"})
     channel = FakeChannel()
     for _ in range(5):
-        await relay.on_message(FakeMessage(".dcss/o", channel=channel))
+        await relay.on_message(FakeMessage(".dcss/explore", channel=channel))
     assert channel.sent == []
 
 

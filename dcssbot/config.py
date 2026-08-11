@@ -98,10 +98,11 @@ class Config:
     #: the bot drop commands that do not fit the screen that is up — quieter,
     #: but it silently eats input, which is its own kind of confusing.
     enforce_context: bool = field(default_factory=lambda: _env_bool("DCSS_ENFORCE_CONTEXT", False))
-    #: The one check that stays on. `S`, `~`, `&` and the Ctrl- codes end or
-    #: derail a run outright, and in an open channel one person could do that
-    #: to every run. Set true to allow them through.
-    allow_dangerous_keys: bool = field(default_factory=lambda: _env_bool("DCSS_ALLOW_DANGEROUS_KEYS", False))
+    #: Off by default, because every printable character is sendable now and
+    #: `S` is a printable character. Turn it on to keep the run-ending keys
+    #: (`S` save-and-exit, `~` macros, `&` wizard mode, the Ctrl- codes) out of
+    #: normal play, if one person ending every run becomes a problem.
+    block_dangerous_keys: bool = field(default_factory=lambda: _env_bool("DCSS_BLOCK_DANGEROUS_KEYS", False))
     #: Pause between the keys `.dcss/neutral` sends while backing out.
     neutral_step_delay: float = field(default_factory=lambda: _env_float("DCSS_NEUTRAL_STEP_DELAY", 0.4))
 

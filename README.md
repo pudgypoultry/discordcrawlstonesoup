@@ -31,16 +31,19 @@ than from memory:
 
 ## Design decisions worth knowing
 
-**The grammar is an allowlist.** With open posting, a blacklist is a losing
-game — someone eventually finds the sequence that saves and exits or opens the
-macro editor. Only tokens in `dcssbot/grammar.py` produce anything, and there
-is no generic "send this character" command. `S`, `Ctrl-Q`, `~` and `&` are
-unreachable by construction. The two commands that take free text (`select`,
-`text`) filter their argument and are gated to contexts where a stray key
-cannot reach the dungeon.
+**Any key, any time.** A single printable character is sent as itself, and
+nothing is dropped for not suiting the screen that is up. This started out as
+an allowlist with context gating, on the reasoning that someone would
+eventually find the key that saves and exits. In practice the gating was the
+bigger problem: a command that vanishes with no reply is indistinguishable
+from a bot that has stopped working, and that ambiguity cost far more than the
+occasional wasted keystroke. Both restrictions still exist behind
+`DCSS_ENFORCE_CONTEXT` and `DCSS_BLOCK_DANGEROUS_KEYS`, off by default.
 
-**Context is checked twice.** Once when the message is parsed, and again at
-dispatch, because a menu can open while a command sits in the queue.
+**The context tracker still earns its keep**, just not as a gate. It drives
+`.dcss/neutral` and the stuck watchdog, both of which need to know whether a
+menu, a `--more--` or a text field is up in order to send the right key to
+escape it.
 
 **The queue is bounded in depth and in age.** A command that fires fifteen
 seconds late is noise, not chaos — whatever it was reacting to is gone. Old
@@ -158,6 +161,9 @@ appeared, the game side never got in.
 | `DCSS_STUCK_TIMEOUT` | `45` | Seconds before the watchdog sends Escape |
 | `DCSS_AUTO_RESTART` | `true` | Start a new character on death |
 | `DCSS_COMPRESSION` | `false` | Use compressed frames instead of `no-compression` |
+| `DCSS_ENFORCE_CONTEXT` | `false` | Drop commands that do not fit the current screen |
+| `DCSS_BLOCK_DANGEROUS_KEYS` | `false` | Keep `S`, `~`, `&`, Ctrl- out of normal play |
+| `DCSS_NEUTRAL_STEP_DELAY` | `0.4` | Pause between keys while `.dcss/neutral` backs out |
 
 `DCSS_COMMAND_INTERVAL` below `0.1` is refused: public servers ask API clients
 to stay under 10 commands per second, and anarchy input is more watchable well
@@ -165,29 +171,41 @@ below that anyway.
 
 ## Commands
 
-`.dcss/help` posts the full list. In an open channel it will get spammed, so it
-is on a 30-second cooldown — consider pinning the list and removing the command.
+**Any single printable character is sent as itself.** `.dcss/o`, `.dcss/S`,
+`.dcss/5`, `.dcss/#` — letters, digits and punctuation go straight through,
+case intact, whether or not they mean anything on the screen that is up.
+
+**Keys with no character need a name**, because there is nothing to type:
 
 ```
-Move    .dcss/n .dcss/s .dcss/e .dcss/w .dcss/ne .dcss/nw .dcss/se .dcss/sw
-        .dcss/run <dir>
-Act     .dcss/o .dcss/tab .dcss/wait .dcss/rest .dcss/up .dcss/down
-        .dcss/travel .dcss/map
-Items   .dcss/pickup .dcss/inv .dcss/wield .dcss/wear .dcss/drop .dcss/quaff
-        .dcss/read .dcss/eat .dcss/fire .dcss/evoke ...
-Magic   .dcss/cast .dcss/spells .dcss/memorise .dcss/abil .dcss/pray
-Prompts .dcss/esc .dcss/enter .dcss/space .dcss/yes .dcss/no .dcss/more
-        .dcss/select <x> .dcss/text <words> .dcss/1 ... .dcss/9
-Bot     .dcss/link .dcss/status .dcss/help
+.dcss/tab .dcss/esc .dcss/enter .dcss/space .dcss/backspace .dcss/delete
+.dcss/arrowup .dcss/arrowdown .dcss/arrowleft .dcss/arrowright
+.dcss/pageup .dcss/pagedown .dcss/home .dcss/end .dcss/ctrl <letter>
 ```
 
-Movement uses compass names rather than crawl's vi keys, because `n` would mean
-both "north" and "no".
+Word aliases exist for the common commands because they read better in a busy
+channel — `.dcss/explore` for `o`, `.dcss/quaff` for `q`. `.dcss/help` lists
+every one of them against the key it sends, so the two forms are never a
+mystery.
+
+Directions are words: `.dcss/north`, not `.dcss/n`. A single letter is that
+letter, and `n` is a move to the south-east in crawl's vi keys.
+
+`.dcss/neutral` backs out of whatever is on screen — menu, prompt, targeting,
+text field — until normal play resumes. It re-reads the situation after each
+key rather than sending a fixed sequence, because menus nest and a `--more--`
+wants a space rather than Escape.
+
+Nothing is filtered for making sense. A command that does not fit the current
+screen is sent anyway and the game decides what it means; `DCSS_ENFORCE_CONTEXT`
+turns the old gating back on. `S` is save-and-exit and reaches the game like
+any other key — `DCSS_BLOCK_DANGEROUS_KEYS` keeps `S`, `~`, `&` and the Ctrl-
+codes out of normal play if one person ending every run becomes a problem.
 
 ## Development
 
 ```sh
-python -m pytest                      # 157 tests, no network needed
+python -m pytest                      # 179 tests, no network needed
 python -m dcssbot.mockserver          # a stand-in WebTiles server
 python scripts/probe.py --key o       # connect, send one key, print the JSON
 ```

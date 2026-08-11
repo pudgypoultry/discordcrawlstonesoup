@@ -60,8 +60,15 @@ turn game output into Discord posts; `discordbot.py` is the gateway side.
 
 ## Rules of thumb
 
-- The grammar is an **allowlist**. Never add a command that forwards arbitrary
-  characters. `S`, `Ctrl-Q`, `~`, `&` must stay unreachable.
-- Context is checked at parse time *and* at dispatch time. Keep both.
+- Any single printable character is sent as itself, and nothing is dropped for
+  not suiting the current screen. Both restrictions still exist behind
+  `DCSS_ENFORCE_CONTEXT` and `DCSS_BLOCK_DANGEROUS_KEYS`, off by default —
+  a silently dropped command reads as a broken bot, which cost more than the
+  keystrokes it saved.
+- The context tracker is not a gate any more; it drives `.dcss/neutral` and
+  the stuck watchdog, which need to know what is on screen to escape it.
+- `text_cursor` alone means a text field is active. Crawl's message-line
+  prompts (Ctrl-F, travel) leave `input_mode` at NORMAL and push nothing onto
+  the UI stack, so requiring a menu there misreads them as ordinary play.
 - Test against `dcssbot.mockserver`, not a live server. `scripts/probe.py` is
   the one-keystroke debugging tool.

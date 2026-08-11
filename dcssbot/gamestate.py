@@ -189,7 +189,12 @@ class GameState:
             MouseMode.TARGET_PATH,
         ):
             return InputContext.TARGET
-        if self.text_cursor and (self.ui_stack_depth or self.ui_state != UIState.NORMAL):
+        # A text cursor means a field is taking typed input, wherever it is.
+        # Crawl's message-line prompts — Ctrl-F search, travel destinations —
+        # live outside the UI stack and leave input_mode at NORMAL, so
+        # requiring an open menu here reported them as ordinary play and let
+        # subsequent keys be typed into the prompt instead of played.
+        if self.text_cursor:
             return InputContext.TEXT_ENTRY
         if self.ui_state == UIState.VIEW_MAP:
             return InputContext.VIEW_MAP

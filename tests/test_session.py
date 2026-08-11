@@ -159,7 +159,7 @@ async def test_context_gating_drops_it_when_enforced(
         server, command_interval=0.3, enforce_context=True
     )
     try:
-        queue.put(parse(".dcss/o"), "alice")  # type: ignore[arg-type]
+        queue.put(parse(".dcss/explore"), "alice")  # type: ignore[arg-type]
         session.state.handle({"msg": "ui-push", "type": "describe-item"})
         await asyncio.sleep(0.6)
         assert {"msg": "input", "text": "o"} not in server.sessions[0].received_keys
@@ -167,13 +167,25 @@ async def test_context_gating_drops_it_when_enforced(
         await shutdown(session, task)
 
 
-async def test_dangerous_keys_stay_blocked_during_play(
+async def test_dangerous_keys_go_through_by_default(
     server: MockWebTilesServer,
 ) -> None:
-    # Removing context gating did not open the door to save-and-exit.
+    # Any printable key, including save-and-exit.
     session, queue, _, task = await running_session(server)
     try:
-        queue.put(parse(".dcss/select S"), "griefer")  # type: ignore[arg-type]
+        queue.put(parse(".dcss/S"), "alice")  # type: ignore[arg-type]
+        await asyncio.sleep(0.4)
+        assert {"msg": "input", "text": "S"} in server.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)
+
+
+async def test_dangerous_keys_can_be_blocked_when_asked(
+    server: MockWebTilesServer,
+) -> None:
+    session, queue, _, task = await running_session(server, block_dangerous_keys=True)
+    try:
+        queue.put(parse(".dcss/S"), "griefer")  # type: ignore[arg-type]
         await asyncio.sleep(0.4)
         assert {"msg": "input", "text": "S"} not in server.sessions[0].received_keys
     finally:
@@ -261,8 +273,8 @@ async def test_watchdog_holds_off_while_commands_are_queued(
     )
     try:
         session.state.handle({"msg": "ui-push", "type": "describe-item"})
-        queue.put(parse(".dcss/select b"), "alice")  # type: ignore[arg-type]
-        queue.put(parse(".dcss/select c"), "bob")  # type: ignore[arg-type]
+        queue.put(parse(".dcss/b"), "alice")  # type: ignore[arg-type]
+        queue.put(parse(".dcss/c"), "bob")  # type: ignore[arg-type]
         await asyncio.sleep(0.6)
         assert {"msg": "key", "keycode": KEY_ESCAPE} not in server.sessions[0].received_keys
     finally:

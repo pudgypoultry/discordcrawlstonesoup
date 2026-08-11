@@ -18,10 +18,10 @@ def cmd(text: str = ".dcss/o"):
 
 def test_fifo_order() -> None:
     queue = CommandQueue()
-    queue.put(cmd(".dcss/n"), "alice")
-    queue.put(cmd(".dcss/s"), "bob")
-    assert queue.get_nowait().name == "n"  # type: ignore[union-attr]
-    assert queue.get_nowait().name == "s"  # type: ignore[union-attr]
+    queue.put(cmd(".dcss/north"), "alice")
+    queue.put(cmd(".dcss/south"), "bob")
+    assert queue.get_nowait().name == "north"  # type: ignore[union-attr]
+    assert queue.get_nowait().name == "south"  # type: ignore[union-attr]
     assert queue.get_nowait() is None
 
 
@@ -29,25 +29,25 @@ def test_full_queue_drops_the_newest() -> None:
     # Evicting the oldest would let a burst push out commands that have been
     # waiting, which is worse than refusing the burst.
     queue = CommandQueue(max_depth=2)
-    assert queue.put(cmd(".dcss/n"), "alice")
-    assert queue.put(cmd(".dcss/s"), "bob")
-    assert not queue.put(cmd(".dcss/e"), "carol")
-    assert [item.name for item in queue] == ["n", "s"]
+    assert queue.put(cmd(".dcss/north"), "alice")
+    assert queue.put(cmd(".dcss/south"), "bob")
+    assert not queue.put(cmd(".dcss/east"), "carol")
+    assert [item.name for item in queue] == ["north", "south"]
     assert queue.stats.dropped_full == 1
 
 
 def test_expired_commands_are_discarded_on_dequeue() -> None:
     queue = CommandQueue(ttl=0.05)
-    queue.put(cmd(".dcss/n"), "alice")
+    queue.put(cmd(".dcss/north"), "alice")
     queue._items[0].queued_at -= 1.0  # pretend it has been waiting
-    queue.put(cmd(".dcss/s"), "bob")
-    assert queue.get_nowait().name == "s"  # type: ignore[union-attr]
+    queue.put(cmd(".dcss/south"), "bob")
+    assert queue.get_nowait().name == "south"  # type: ignore[union-attr]
     assert queue.stats.dropped_expired == 1
 
 
 def test_ttl_of_zero_disables_expiry() -> None:
     queue = CommandQueue(ttl=0)
-    queue.put(cmd(".dcss/n"), "alice")
+    queue.put(cmd(".dcss/north"), "alice")
     queue._items[0].queued_at -= 1000.0
     assert queue.get_nowait() is not None
 
@@ -71,23 +71,23 @@ def test_duplicates_collapse_when_enabled() -> None:
 
 def test_collapsing_distinguishes_arguments() -> None:
     queue = CommandQueue(collapse_duplicates=True)
-    queue.put(cmd(".dcss/run n"), "a")
-    queue.put(cmd(".dcss/run s"), "b")
+    queue.put(cmd(".dcss/run ne"), "a")
+    queue.put(cmd(".dcss/run sw"), "b")
     assert len(queue) == 2
 
 
 def test_per_user_cooldown_rejects_a_rapid_second_post() -> None:
     queue = CommandQueue(per_user_cooldown=60.0)
     assert queue.put(cmd(".dcss/o"), "alice")
-    assert not queue.put(cmd(".dcss/n"), "alice")
-    assert queue.put(cmd(".dcss/n"), "bob")
+    assert not queue.put(cmd(".dcss/north"), "alice")
+    assert queue.put(cmd(".dcss/north"), "bob")
     assert queue.stats.dropped_cooldown == 1
 
 
 def test_clear_reports_what_it_dropped() -> None:
     queue = CommandQueue()
     queue.put(cmd(".dcss/o"), "alice")
-    queue.put(cmd(".dcss/n"), "bob")
+    queue.put(cmd(".dcss/north"), "bob")
     assert queue.clear() == 2
     assert len(queue) == 0
 
@@ -106,7 +106,7 @@ async def test_get_waits_for_a_command() -> None:
 
 async def test_get_skips_expired_and_keeps_waiting() -> None:
     queue = CommandQueue(ttl=0.05)
-    queue.put(cmd(".dcss/n"), "alice")
+    queue.put(cmd(".dcss/north"), "alice")
     queue._items[0].queued_at -= 1.0
 
     async def put_later() -> None:
