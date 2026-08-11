@@ -191,6 +191,20 @@ against the key it sends.
 Directions are words: `north`, not `n`. A single letter is that letter, and
 `n` is a move south-east in crawl's vi keys.
 
+**Double a movement key to run.** `uu` is Shift-u — north-east until something
+happens. Only the eight vi keys (`h j k l y u b n`) double; doubling anything
+else would silently upper-case it, and `ss` would be save-and-exit.
+
+**Modifiers are two words**: `ctrl f`, `shift u`, `shift arrowup`. Shift on a
+letter is its capital; on an arrow or Tab it is the distinct keycode from
+`cio.h`. Shift on punctuation is refused, because which symbol that produces
+is a fact about the keyboard, not about crawl.
+
+Everything that combines keys — doubled runs, `run <dir>`, `ctrl`, `shift` —
+is **held back unless the game is in ordinary play**. A run has no meaning in
+a menu and a control key there can do something surprising. Single keys are
+unaffected and still go through anywhere.
+
 `neutral` backs out of whatever is on screen — menu, prompt, targeting, text
 field — until normal play resumes, re-reading the situation after each key
 rather than sending a fixed sequence.

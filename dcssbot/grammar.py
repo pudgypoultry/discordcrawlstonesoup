@@ -16,8 +16,17 @@ purely because they read better in a busy channel. :func:`help_text` lists
 each one against the key it sends, so the two forms are never a mystery.
 
 Since a single character is now a valid command, direction names are words:
-``.dcss/north``, not ``.dcss/n`` — ``n`` is the character ``n``, which crawl
-reads as a move to the south-east.
+``north``, not ``n`` — ``n`` is the character ``n``, which crawl reads as a
+move to the south-east.
+
+**Doubling a movement key runs.** ``uu`` is Shift-u, north-east until
+something happens. Only the eight vi keys double; doubling anything else would
+silently upper-case it, and ``ss`` would be save-and-exit.
+
+**A modifier plus a key** is written as two words: ``ctrl f``, ``shift u``,
+``shift arrowup``. Everything that combines keys this way is held back unless
+the game is in ordinary play, because a run means nothing in a menu and a
+control key there can do something surprising.
 """
 
 from __future__ import annotations
@@ -29,6 +38,7 @@ from typing import Iterable
 
 from .gamestate import InputContext
 from .keys import (
+    CK,
     CK_DELETE,
     CK_DOWN,
     CK_END,
@@ -108,6 +118,11 @@ class Command:
     key: str = ""
     meta: bool = False
     takes_argument: bool = False
+    #: Anything that combines keys — a doubled direction, a modifier, a run.
+    #: These are only meaningful during ordinary play: inside a menu a run has
+    #: no meaning and a control key can do something surprising, so they are
+    #: held back there regardless of DCSS_ENFORCE_CONTEXT.
+    multi_key: bool = False
 
 
 def _text(*chars: str) -> tuple[Step, ...]:
@@ -127,6 +142,7 @@ def _cmd(
     *,
     meta: bool = False,
     takes_argument: bool = False,
+    multi_key: bool = False,
 ) -> Command:
     return Command(
         name=name,
@@ -136,6 +152,7 @@ def _cmd(
         key=key,
         meta=meta,
         takes_argument=takes_argument,
+        multi_key=multi_key,
     )
 
 
@@ -159,7 +176,7 @@ _COMMAND_LIST: list[Command] = [
 
 _COMMAND_LIST += [
     _cmd("run", (), PLAY_ONLY, "run in a direction, e.g. `run ne`",
-         "shifted direction", takes_argument=True),
+         "shifted direction", takes_argument=True, multi_key=True),
 
     # -- keys with no character, which is why they need a name -------------
     _cmd("tab", _key(KEY_TAB), ANY, "auto-fight the nearest monster", "Tab"),
@@ -181,7 +198,9 @@ _COMMAND_LIST += [
     _cmd("home", _key(CK_HOME), ANY, "jump to the top", "Home"),
     _cmd("end", _key(CK_END), ANY, "jump to the bottom", "End"),
     _cmd("ctrl", (), ANY, "send a control key, e.g. `ctrl f`",
-         "Ctrl-<letter>", takes_argument=True),
+         "Ctrl-<key>", takes_argument=True, multi_key=True),
+    _cmd("shift", (), ANY, "send a shifted key, e.g. `shift u` to run north-east",
+         "Shift-<key>", takes_argument=True, multi_key=True),
 
     # -- word aliases for common commands ----------------------------------
     _cmd("explore", _text("o"), PLAY_ONLY, "auto-explore", "o"),
@@ -245,6 +264,35 @@ LITERAL = Command(
     help="send a single key",
     key="the character itself",
 )
+
+#: The pseudo-command a doubled direction parses into.
+DOUBLED = Command(
+    name="run-key",
+    steps=(),
+    contexts=PLAY_ONLY,
+    help="run in a direction",
+    key="the shifted character",
+    multi_key=True,
+)
+
+#: crawl's vi movement keys. Doubling one of these runs in that direction,
+#: which is Shift plus the same key. Only these eight: doubling an arbitrary
+#: letter would silently upper-case it, and `ss` would be save-and-exit.
+RUN_KEYS: frozenset[str] = frozenset("hjklyubn")
+
+#: Named keys that have a Shift- and Ctrl- variant in cio.h.
+_MODIFIED_KEYS: dict[str, str] = {
+    "arrowup": "UP",
+    "arrowdown": "DOWN",
+    "arrowleft": "LEFT",
+    "arrowright": "RIGHT",
+    "insert": "INSERT",
+    "home": "HOME",
+    "end": "END",
+    "pageup": "PGUP",
+    "pagedown": "PGDN",
+    "tab": "TAB",
+}
 
 
 @dataclass(frozen=True)
@@ -311,6 +359,16 @@ def _parse_body(body: str) -> ParsedCommand:
             raise ParseError("a single key takes no argument")
         return ParsedCommand(command=LITERAL, steps=_text(token), argument=token)
 
+    # A doubled movement key runs: `uu` is Shift-u, north-east until something
+    # happens. Restricted to the eight vi keys, since doubling anything else
+    # would just upper-case it and `ss` would be save-and-exit.
+    if len(token) == 2 and token[0] == token[1] and token[0] in RUN_KEYS:
+        if argument:
+            raise ParseError("a doubled key takes no argument")
+        return ParsedCommand(
+            command=DOUBLED, steps=_text(token[0].upper()), argument=token
+        )
+
     command = COMMANDS.get(token.lower())
     if command is None:
         raise ParseError(f"unknown command `{_sanitise(token)}`")
@@ -336,13 +394,8 @@ def _parse_argument(command: Command, argument: str) -> ParsedCommand:
             argument=direction,
         )
 
-    if command.name == "ctrl":
-        letter = argument.lower()
-        if len(letter) != 1 or not letter.isalpha():
-            raise ParseError("ctrl takes a single letter, e.g. `ctrl f`")
-        return ParsedCommand(
-            command=command, steps=_key(ctrl(letter)), argument=letter
-        )
+    if command.name in ("ctrl", "shift"):
+        return _parse_modified(command, argument)
 
     if command.name == "text":
         if not _TEXT_RE.match(argument):
@@ -354,6 +407,33 @@ def _parse_argument(command: Command, argument: str) -> ParsedCommand:
         )
 
     raise ParseError(f"`{command.name}` does not take an argument")
+
+
+def _parse_modified(command: Command, argument: str) -> ParsedCommand:
+    """``ctrl f`` / ``shift u`` — a modifier plus a key that actually has one.
+
+    Only combinations the game can receive are accepted. Shift on a letter is
+    just its capital; on an arrow or Tab it is a distinct keycode from cio.h.
+    Shift on punctuation is refused, because which symbol that produces is a
+    property of the keyboard layout, not of crawl.
+    """
+    target = argument.strip()
+    modifier = command.name
+
+    if len(target) == 1 and target.isalpha():
+        if modifier == "ctrl":
+            return ParsedCommand(command, _key(ctrl(target)), target.lower())
+        return ParsedCommand(command, _text(target.upper()), target.lower())
+
+    named = _MODIFIED_KEYS.get(target.lower())
+    if named is not None:
+        code = CK.get(f"{modifier.upper()}_{named}")
+        if code is not None:
+            return ParsedCommand(command, _key(code), target.lower())
+
+    raise ParseError(
+        f"{modifier} takes a letter or one of: " + ", ".join(sorted(_MODIFIED_KEYS))
+    )
 
 
 def allowed_in(command: Command, context: InputContext, *, enforce: bool = True) -> bool:
@@ -395,11 +475,11 @@ def _sanitise(token: str) -> str:
 
 
 _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Move", ("north", "south", "east", "west", "ne", "nw", "se", "sw", "run")),
+    ("Move", ("north", "south", "east", "west", "ne", "nw", "se", "sw")),
     ("Keys with no character", (
         "tab", "esc", "enter", "space", "backspace", "delete",
         "arrowup", "arrowdown", "arrowleft", "arrowright",
-        "pageup", "pagedown", "home", "end", "ctrl",
+        "pageup", "pagedown", "home", "end",
     )),
     ("Common actions", (
         "explore", "wait", "rest", "upstairs", "downstairs", "travel", "map",
@@ -410,6 +490,7 @@ _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "cast", "spells", "memorise", "abil", "pray",
         "look", "char", "skills", "religion", "resists",
     )),
+    ("Combinations (normal play only)", ("run", "ctrl", "shift")),
     ("Prompts", ("yes", "no", "more", "text", "neutral")),
     ("Bot", ("link", "status", "help")),
 )
@@ -421,6 +502,8 @@ def help_text(prefix: str = ".dcss/") -> str:
         "**Just type the key.** `o` `S` `5` `#` — letters, digits and "
         "punctuation are sent as typed, no prefix needed.",
         "Keys with no character have a name instead. Below, name → key sent.",
+        "**Double a movement key to run**: `hh` `jj` `kk` `ll` `yy` `uu` `bb` "
+        "`nn` — `uu` runs north-east.",
         "",
     ]
     for title, names in _HELP_GROUPS:

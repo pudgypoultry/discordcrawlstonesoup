@@ -68,8 +68,12 @@ turn game output into Discord posts; `discordbot.py` is the gateway side.
   `DCSS_ENFORCE_CONTEXT` and `DCSS_BLOCK_DANGEROUS_KEYS`, off by default —
   a silently dropped command reads as a broken bot, which cost more than the
   keystrokes it saved.
-- The context tracker is not a gate any more; it drives `.dcss/neutral` and
-  the stuck watchdog, which need to know what is on screen to escape it.
+- The context tracker is not a gate any more; it drives `.dcss/neutral`, the
+  stuck watchdog, and the one remaining restriction: anything marked
+  `multi_key` (doubled runs, `run`, `ctrl`, `shift`) is only sent during
+  `PLAY`, whatever `DCSS_ENFORCE_CONTEXT` says.
+- Doubling only applies to the eight vi keys. `ss` would otherwise become `S`,
+  which saves and exits.
 - `text_cursor` alone means a text field is active. Crawl's message-line
   prompts (Ctrl-F, travel) leave `input_mode` at NORMAL and push nothing onto
   the UI stack, so requiring a menu there misreads them as ordinary play.

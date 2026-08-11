@@ -13,18 +13,41 @@ be rearranged, so the block is written out here in the same order.
 
 from __future__ import annotations
 
-# cio.h: CK_DELETE = -255, then a fixed sequence.
-CK_DELETE = -255
-CK_UP = -254
-CK_DOWN = -253
-CK_LEFT = -252
-CK_RIGHT = -251
-CK_INSERT = -250
-CK_HOME = -249
-CK_END = -248
-CK_CLEAR = -247
-CK_PGUP = -246
-CK_PGDN = -245
+# cio.h: CK_DELETE = -255, then a sequence its own comment says must not be
+# rearranged. Enumerated rather than written out as literals so the plain and
+# modified variants cannot drift apart from a miscount.
+_CK_SEQUENCE = (
+    "DELETE",
+    "UP", "DOWN", "LEFT", "RIGHT",
+    "INSERT",
+    "HOME", "END", "CLEAR",
+    "PGUP", "PGDN",
+    "TAB_PLACEHOLDER",          # unused; present only as an offset
+    "SHIFT_UP", "SHIFT_DOWN", "SHIFT_LEFT", "SHIFT_RIGHT",
+    "SHIFT_INSERT",
+    "SHIFT_HOME", "SHIFT_END", "SHIFT_CLEAR",
+    "SHIFT_PGUP", "SHIFT_PGDN",
+    "SHIFT_TAB",
+    "CTRL_UP", "CTRL_DOWN", "CTRL_LEFT", "CTRL_RIGHT",
+    "CTRL_INSERT",
+    "CTRL_HOME", "CTRL_END", "CTRL_CLEAR",
+    "CTRL_PGUP", "CTRL_PGDN",
+    "CTRL_TAB",
+)
+
+CK: dict[str, int] = {name: -255 + i for i, name in enumerate(_CK_SEQUENCE)}
+
+CK_DELETE = CK["DELETE"]
+CK_UP = CK["UP"]
+CK_DOWN = CK["DOWN"]
+CK_LEFT = CK["LEFT"]
+CK_RIGHT = CK["RIGHT"]
+CK_INSERT = CK["INSERT"]
+CK_HOME = CK["HOME"]
+CK_END = CK["END"]
+CK_CLEAR = CK["CLEAR"]
+CK_PGUP = CK["PGUP"]
+CK_PGDN = CK["PGDN"]
 
 # ASCII control keys. crawl reads these as plain small integers.
 KEY_BACKSPACE = 8

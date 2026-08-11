@@ -372,3 +372,61 @@ async def test_reconnects_after_the_server_drops_the_connection(
         assert session.in_game
     finally:
         await shutdown(session, task)
+
+
+async def test_a_doubled_key_runs_during_normal_play(
+    server: MockWebTilesServer,
+) -> None:
+    session, queue, _, task = await running_session(server)
+    try:
+        queue.put(parse("uu"), "alice")  # type: ignore[arg-type]
+        await asyncio.sleep(0.4)
+        assert {"msg": "input", "text": "U"} in server.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)
+
+
+async def test_a_menu_blocks_doubled_keys_and_modifiers(
+    server: MockWebTilesServer,
+) -> None:
+    # Running has no meaning in a menu and a control key there can do
+    # something surprising, so combinations are held back — whatever
+    # DCSS_ENFORCE_CONTEXT says.
+    session, queue, _, task = await running_session(server)
+    try:
+        session.state.handle({"msg": "ui-push", "type": "describe-item"})
+        for text in ("uu", "shift u", "ctrl f", "run ne"):
+            queue.put(parse(text), "alice")  # type: ignore[arg-type]
+        await asyncio.sleep(0.6)
+        sent = server.sessions[0].received_keys
+        assert {"msg": "input", "text": "U"} not in sent
+        assert {"msg": "key", "keycode": 6} not in sent
+    finally:
+        await shutdown(session, task)
+
+
+async def test_a_menu_still_accepts_single_keys(
+    server: MockWebTilesServer,
+) -> None:
+    # Only combinations are restricted; ordinary keys are untouched.
+    session, queue, _, task = await running_session(server)
+    try:
+        session.state.handle({"msg": "ui-push", "type": "describe-item"})
+        queue.put(parse("b"), "alice")  # type: ignore[arg-type]
+        await asyncio.sleep(0.4)
+        assert {"msg": "input", "text": "b"} in server.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)
+
+
+async def test_text_entry_blocks_combinations_too(
+    server: MockWebTilesServer,
+) -> None:
+    session, queue, _, task = await running_session(server)
+    try:
+        session.state.handle({"msg": "text_cursor", "enabled": True})
+        queue.put(parse("uu"), "alice")  # type: ignore[arg-type]
+        await asyncio.sleep(0.4)
+        assert {"msg": "input", "text": "U"} not in server.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)

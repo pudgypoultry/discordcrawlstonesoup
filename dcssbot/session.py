@@ -287,6 +287,13 @@ class GameSession:
     async def _dispatch(self, item: QueuedCommand) -> None:
         context = self.state.context
         command = item.parsed.command
+        if command.multi_key and context is not InputContext.PLAY:
+            # Runs and modifier combinations only mean anything during ordinary
+            # play. Inside a menu a run is nonsense and a control key can do
+            # something surprising, so these are held back there whatever
+            # DCSS_ENFORCE_CONTEXT says. Single keys are unaffected.
+            log.debug("skipping %s: %s is not normal play", item.name, context.value)
+            return
         if not allowed_in(command, context, enforce=self.config.enforce_context):
             # Only reachable with DCSS_ENFORCE_CONTEXT on.
             log.debug("skipping %s: context is now %s", item.name, context.value)

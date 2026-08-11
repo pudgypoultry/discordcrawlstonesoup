@@ -21,7 +21,7 @@ from dcssbot.grammar import (
     is_safe_to_send,
     parse,
 )
-from dcssbot.keys import CK_UP, KEY_ESCAPE, KEY_TAB, ctrl
+from dcssbot.keys import CK, CK_UP, KEY_ESCAPE, KEY_TAB, ctrl
 
 
 def test_non_command_messages_are_ignored_silently() -> None:
@@ -266,3 +266,69 @@ def test_a_prefixed_mistake_still_raises() -> None:
 def test_a_bare_word_that_is_a_command_with_junk_after_it_is_chat() -> None:
     assert parse("map is confusing") is None
     assert parse("run for your life") is None
+
+
+# -- runs and modifier combinations ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("doubled", "sent"),
+    [("hh", "H"), ("jj", "J"), ("kk", "K"), ("ll", "L"),
+     ("yy", "Y"), ("uu", "U"), ("bb", "B"), ("nn", "N")],
+)
+def test_doubling_a_movement_key_runs(doubled: str, sent: str) -> None:
+    parsed = parse(doubled)
+    assert parsed is not None
+    assert [s.text for s in parsed.steps] == [sent]
+    assert parsed.command.multi_key
+
+
+@pytest.mark.parametrize("doubled", ["oo", "ss", "aa", "zz", "ww", "ii", "SS", "55"])
+def test_only_movement_keys_double(doubled: str) -> None:
+    # `ss` would otherwise become `S`, which saves and exits the game.
+    assert parse(doubled) is None
+
+
+def test_a_doubled_key_takes_no_argument() -> None:
+    with pytest.raises(ParseError):
+        parse(".dcss/uu north")
+
+
+def test_shift_on_a_letter_is_its_capital() -> None:
+    parsed = parse("shift u")
+    assert parsed is not None
+    assert [s.text for s in parsed.steps] == ["U"]
+
+
+def test_shift_and_ctrl_on_named_keys_use_the_cio_codes() -> None:
+    assert parse("shift arrowup").steps[0].keycode == CK["SHIFT_UP"]  # type: ignore[union-attr]
+    assert parse("shift tab").steps[0].keycode == CK["SHIFT_TAB"]  # type: ignore[union-attr]
+    assert parse("ctrl arrowleft").steps[0].keycode == CK["CTRL_LEFT"]  # type: ignore[union-attr]
+
+
+def test_ctrl_on_a_letter_is_the_control_code() -> None:
+    assert parse("ctrl f").steps[0].keycode == ctrl("f")  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("bad", ["shift 5", "shift ,", "ctrl 9", "shift esc", "ctrl ."])
+def test_modifiers_refuse_keys_that_have_no_such_combination(bad: str) -> None:
+    # Which symbol Shift-5 produces is a keyboard-layout fact, not a crawl one.
+    assert parse(bad) is None
+    with pytest.raises(ParseError):
+        parse(f".dcss/{bad}")
+
+
+def test_every_combination_form_is_marked_multi_key() -> None:
+    for text in ("uu", "shift u", "ctrl f", "run ne"):
+        parsed = parse(text)
+        assert parsed is not None and parsed.command.multi_key, text
+
+
+def test_a_plain_key_is_not_multi_key() -> None:
+    for text in ("o", "S", "north", "tab"):
+        parsed = parse(text)
+        assert parsed is not None and not parsed.command.multi_key, text
+
+
+def test_help_mentions_doubling() -> None:
+    assert "Double a movement key to run" in help_text()
