@@ -1,7 +1,7 @@
 # dcssbot
 
 A Discord bot that relays chat messages to a live game of Dungeon Crawl Stone
-Soup. Anyone in the channel can post `.dcss/o` or `.dcss/tab`; the keystrokes
+Soup. Anyone in the channel can type `o` or `tab`; the keystrokes
 go to one shared character, conflicts and all. Twitch Plays Pokémon, with
 permadeath.
 
@@ -161,6 +161,7 @@ appeared, the game side never got in.
 | `DCSS_STUCK_TIMEOUT` | `45` | Seconds before the watchdog sends Escape |
 | `DCSS_AUTO_RESTART` | `true` | Start a new character on death |
 | `DCSS_COMPRESSION` | `false` | Use compressed frames instead of `no-compression` |
+| `DCSS_REQUIRE_PREFIX` | `false` | Require `.dcss/` on keys too, keeping the channel chattable |
 | `DCSS_ENFORCE_CONTEXT` | `false` | Drop commands that do not fit the current screen |
 | `DCSS_BLOCK_DANGEROUS_KEYS` | `false` | Keep `S`, `~`, `&`, Ctrl- out of normal play |
 | `DCSS_NEUTRAL_STEP_DELAY` | `0.4` | Pause between keys while `.dcss/neutral` backs out |
@@ -171,30 +172,40 @@ below that anyway.
 
 ## Commands
 
-**Any single printable character is sent as itself.** `.dcss/o`, `.dcss/S`,
-`.dcss/5`, `.dcss/#` — letters, digits and punctuation go straight through,
-case intact, whether or not they mean anything on the screen that is up.
+**Type the key. No prefix.** A message that is just `o` sends `o`; `S` sends
+`S`; `5`, `#`, `?` likewise. Letters, digits and punctuation go straight
+through with case intact.
 
-**Keys with no character need a name**, because there is nothing to type:
+**Keys with no character have a name**, because there is nothing to type:
 
 ```
-.dcss/tab .dcss/esc .dcss/enter .dcss/space .dcss/backspace .dcss/delete
-.dcss/arrowup .dcss/arrowdown .dcss/arrowleft .dcss/arrowright
-.dcss/pageup .dcss/pagedown .dcss/home .dcss/end .dcss/ctrl <letter>
+tab  esc  enter  space  backspace  delete
+arrowup  arrowdown  arrowleft  arrowright
+pageup  pagedown  home  end  ctrl <letter>
 ```
 
 Word aliases exist for the common commands because they read better in a busy
-channel — `.dcss/explore` for `o`, `.dcss/quaff` for `q`. `.dcss/help` lists
-every one of them against the key it sends, so the two forms are never a
-mystery.
+channel — `explore` for `o`, `quaff` for `q`. `.dcss/help` lists every one
+against the key it sends.
 
-Directions are words: `.dcss/north`, not `.dcss/n`. A single letter is that
-letter, and `n` is a move to the south-east in crawl's vi keys.
+Directions are words: `north`, not `n`. A single letter is that letter, and
+`n` is a move south-east in crawl's vi keys.
 
-`.dcss/neutral` backs out of whatever is on screen — menu, prompt, targeting,
-text field — until normal play resumes. It re-reads the situation after each
-key rather than sending a fixed sequence, because menus nest and a `--more--`
-wants a space rather than Escape.
+`neutral` backs out of whatever is on screen — menu, prompt, targeting, text
+field — until normal play resumes, re-reading the situation after each key
+rather than sending a fixed sequence.
+
+**The bot's own commands keep the prefix**: `.dcss/help`, `.dcss/link`,
+`.dcss/status`. Otherwise saying "help" in conversation would dump the command
+list. The prefix still works on keys too — `.dcss/o` is the same as `o`.
+
+### What this means for the channel
+
+The bot reads every message, so **ordinary words that are commands become
+keystrokes**: `no`, `yes`, `map`, `read`, `eat`, `wait`, `run`, `look`, `home`,
+`end`. Anything that is not a key is ignored silently, but the channel is no
+longer usable for conversation. Give the bot its own channel, or set
+`DCSS_REQUIRE_PREFIX=true` to go back to needing `.dcss/` on everything.
 
 Nothing is filtered for making sense. A command that does not fit the current
 screen is sent anyway and the game decides what it means; `DCSS_ENFORCE_CONTEXT`
@@ -205,7 +216,7 @@ codes out of normal play if one person ending every run becomes a problem.
 ## Development
 
 ```sh
-python -m pytest                      # 179 tests, no network needed
+python -m pytest                      # 198 tests, no network needed
 python -m dcssbot.mockserver          # a stand-in WebTiles server
 python scripts/probe.py --key o       # connect, send one key, print the JSON
 ```

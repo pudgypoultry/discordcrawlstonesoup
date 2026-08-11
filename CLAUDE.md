@@ -60,6 +60,9 @@ turn game output into Discord posts; `discordbot.py` is the gateway side.
 
 ## Rules of thumb
 
+- Keys need no prefix: a bare `o` is a command. `help`/`link`/`status` keep
+  `.dcss/` so conversation cannot fire them, and unparseable bare messages are
+  ignored silently because most channel traffic is chat.
 - Any single printable character is sent as itself, and nothing is dropped for
   not suiting the current screen. Both restrictions still exist behind
   `DCSS_ENFORCE_CONTEXT` and `DCSS_BLOCK_DANGEROUS_KEYS`, off by default —

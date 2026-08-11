@@ -264,26 +264,48 @@ class ParseError(Exception):
     """The message looked like a command but was not a valid one."""
 
 
-def parse(content: str, prefix: str = ".dcss/") -> ParsedCommand | None:
+def parse(
+    content: str, prefix: str = ".dcss/", *, allow_bare: bool = True
+) -> ParsedCommand | None:
     """Parse one Discord message.
 
-    Returns ``None`` when the message is not addressed to the bot at all, so
-    ordinary chat is ignored silently. Raises :class:`ParseError` when the
-    prefix matched but the rest did not.
+    Keys need no prefix: a message that is just ``o`` sends ``o``, and one that
+    is just ``north`` sends ``k``. Anything that is not a key is ordinary chat
+    and returns ``None`` — silently, because in bare mode most messages are
+    conversation and replying to each one would be unbearable.
+
+    The prefix still works for keys, and is *required* for the bot's own
+    commands, so nobody fires ``help`` by saying "help" in conversation. A
+    prefixed message that does not parse raises :class:`ParseError`, since
+    someone who typed the prefix clearly meant to address the bot.
     """
     text = content.strip()
-    if not text.lower().startswith(prefix.lower()):
-        return None
-    rest = text[len(prefix):].strip()
-    if not rest:
-        raise ParseError("no command given")
 
-    head, _, argument = rest.partition(" ")
+    if text.lower().startswith(prefix.lower()):
+        body = text[len(prefix):].strip()
+        if not body:
+            raise ParseError("no command given")
+        return _parse_body(body)
+
+    if not allow_bare or not text:
+        return None
+    try:
+        parsed = _parse_body(text)
+    except ParseError:
+        return None
+    # `help`, `link` and `status` are the bot talking about itself rather than
+    # keys going to the game, so they keep the prefix.
+    return None if parsed.command.meta else parsed
+
+
+def _parse_body(body: str) -> ParsedCommand:
+    """Turn a command body into keystrokes, or raise."""
+    head, _, argument = body.partition(" ")
     token = head.strip()
     argument = argument.strip()
 
     # A single printable character is that character, case intact. Checked
-    # before the name table so `.dcss/m` is the key `m`, not the word.
+    # before the name table so `m` is the key `m`, not the word.
     if _LITERAL_CHAR.match(token):
         if argument:
             raise ParseError("a single key takes no argument")
@@ -396,9 +418,9 @@ _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 def help_text(prefix: str = ".dcss/") -> str:
     """A listing of every named command against the key it sends."""
     lines = [
-        f"**Any single key works on its own**: `{prefix}o` `{prefix}S` `{prefix}5` "
-        f"`{prefix}#` — letters, digits and punctuation are sent as typed.",
-        f"Keys with no character need a name. Below, `{prefix}name` → key sent.",
+        "**Just type the key.** `o` `S` `5` `#` — letters, digits and "
+        "punctuation are sent as typed, no prefix needed.",
+        "Keys with no character have a name instead. Below, name → key sent.",
         "",
     ]
     for title, names in _HELP_GROUPS:
@@ -410,7 +432,12 @@ def help_text(prefix: str = ".dcss/") -> str:
             if command.meta:
                 entries.append(f"`{prefix}{name}`")
             else:
-                entries.append(f"`{prefix}{name}` → `{command.key}`")
+                entries.append(f"`{name}` → `{command.key}`")
         if entries:
             lines.append(f"**{title}**: {', '.join(entries)}")
+    lines.append(
+        f"Bot commands keep the prefix, so nobody fires them by chatting: "
+        f"`{prefix}help` `{prefix}link` `{prefix}status`. The prefix also still "
+        f"works on any key — `{prefix}o` is the same as `o`."
+    )
     return "\n".join(lines)

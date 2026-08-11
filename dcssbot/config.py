@@ -103,6 +103,12 @@ class Config:
     #: (`S` save-and-exit, `~` macros, `&` wizard mode, the Ctrl- codes) out of
     #: normal play, if one person ending every run becomes a problem.
     block_dangerous_keys: bool = field(default_factory=lambda: _env_bool("DCSS_BLOCK_DANGEROUS_KEYS", False))
+    #: Keys need no prefix by default: a message that is just `o` sends `o`.
+    #: Turn this on to require the prefix on everything, which is the only way
+    #: to keep the channel usable for conversation — several commands are
+    #: ordinary words (`no`, `yes`, `map`, `read`, `run`), and bare mode fires
+    #: them whenever somebody types one.
+    require_prefix: bool = field(default_factory=lambda: _env_bool("DCSS_REQUIRE_PREFIX", False))
     #: Pause between the keys `.dcss/neutral` sends while backing out.
     neutral_step_delay: float = field(default_factory=lambda: _env_float("DCSS_NEUTRAL_STEP_DELAY", 0.4))
 

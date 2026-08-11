@@ -86,7 +86,11 @@ class DiscordRelay(discord.Client):
             return
 
         try:
-            parsed = parse(message.content, self.config.command_prefix)
+            parsed = parse(
+                message.content,
+                self.config.command_prefix,
+                allow_bare=not self.config.require_prefix,
+            )
         except ParseError as exc:
             await self._reply_error(message, str(exc))
             return

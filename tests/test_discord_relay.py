@@ -160,7 +160,7 @@ async def test_help_is_rate_limited() -> None:
     await relay.on_message(FakeMessage(".dcss/help", channel=channel))
     await relay.on_message(FakeMessage(".dcss/help", channel=channel))
     assert len(channel.sent) == 1
-    assert ".dcss/explore" in channel.sent[0]
+    assert "`explore` → `o`" in channel.sent[0]
 
 
 async def test_link_posts_the_spectate_url() -> None:
@@ -279,3 +279,36 @@ async def test_status_without_an_error_says_it_is_still_connecting() -> None:
     await relay.on_message(FakeMessage(".dcss/status", channel=channel))
     # Names the address it is trying, not a bare "still connecting".
     assert "ws://127.0.0.1:8080/socket" in channel.sent[0]
+
+
+async def test_a_bare_key_is_queued_without_the_prefix() -> None:
+    relay, queue = make_relay()
+    await relay.on_message(FakeMessage("o"))
+    item = queue.get_nowait()
+    assert item is not None
+    assert [s.text for s in item.parsed.steps] == ["o"]
+
+
+async def test_bare_chat_is_still_ignored() -> None:
+    relay, queue = make_relay()
+    message = FakeMessage("that gnoll looks rough")
+    await relay.on_message(message)
+    assert len(queue) == 0
+    assert message.channel.sent == []
+
+
+async def test_bare_help_does_nothing_but_prefixed_help_works() -> None:
+    relay, _ = make_relay()
+    channel = FakeChannel()
+    await relay.on_message(FakeMessage("help", channel=channel))
+    assert channel.sent == []
+    await relay.on_message(FakeMessage(".dcss/help", channel=channel))
+    assert len(channel.sent) == 1
+
+
+async def test_requiring_the_prefix_turns_bare_input_off() -> None:
+    relay, queue = make_relay(require_prefix=True)
+    await relay.on_message(FakeMessage("o"))
+    assert len(queue) == 0
+    await relay.on_message(FakeMessage(".dcss/o"))
+    assert len(queue) == 1
