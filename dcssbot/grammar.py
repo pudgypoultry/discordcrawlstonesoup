@@ -71,6 +71,9 @@ class Kind(Enum):
     #: Back out of whatever is on screen until normal play resumes. The keys
     #: depend on what is up at the time, so the session drives it.
     RECOVER = "recover"
+    #: A multi-step routine that has to read the screen as it goes, so only
+    #: the session can run it. `text` carries the argument.
+    MACRO = "macro"
 
 
 #: Kept for the dispatch-time check and for ``DCSS_BLOCK_DANGEROUS_KEYS``.
@@ -240,6 +243,9 @@ _COMMAND_LIST += [
     # -- multi-key and bot commands ----------------------------------------
     _cmd("text", (), ANY, "type a word into a text field, e.g. `text Sigmund`",
          "typed text", takes_argument=True),
+    _cmd("train", (), PLAY_ONLY,
+         "train one skill only and target the next level, e.g. `train fighting`",
+         "m, Shift-key, =, key, number", takes_argument=True, multi_key=True),
     _cmd("neutral", (Step(Kind.RECOVER),), ANY,
          "back out of any menu or prompt until normal play resumes",
          "Escape, repeatedly"),
@@ -253,6 +259,8 @@ COMMANDS: dict[str, Command] = {c.name: c for c in _COMMAND_LIST}
 #: A single character is sent as itself. ASCII printable, excluding space —
 #: `.dcss/space` covers that, since a trailing space is invisible in chat.
 _LITERAL_CHAR = re.compile(r"^[\x21-\x7e]$")
+#: Skill names: letters, spaces and the ampersand in "Maces & Flails".
+_SKILL_RE = re.compile(r"^[A-Za-z][A-Za-z&' ]{1,23}$")
 #: Text fields get a conservative subset; no control or markup characters.
 _TEXT_RE = re.compile(r"^[A-Za-z0-9 _'-]{1,32}$")
 
@@ -397,6 +405,15 @@ def _parse_argument(command: Command, argument: str) -> ParsedCommand:
     if command.name in ("ctrl", "shift"):
         return _parse_modified(command, argument)
 
+    if command.name == "train":
+        if not _SKILL_RE.match(argument):
+            raise ParseError("train takes a skill name, e.g. `train fighting`")
+        return ParsedCommand(
+            command=command,
+            steps=(Step(Kind.MACRO, text=argument),),
+            argument=argument.lower(),
+        )
+
     if command.name == "text":
         if not _TEXT_RE.match(argument):
             raise ParseError("text may only contain letters, digits and spaces")
@@ -491,7 +508,7 @@ _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "look", "char", "skills", "religion", "resists",
     )),
     ("Combinations (normal play only)", ("run", "ctrl", "shift")),
-    ("Prompts", ("yes", "no", "more", "text", "neutral")),
+    ("Prompts", ("yes", "no", "more", "text", "neutral", "train")),
     ("Bot", ("link", "status", "help")),
 )
 

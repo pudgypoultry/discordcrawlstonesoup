@@ -109,6 +109,9 @@ class Config:
     #: ordinary words (`no`, `yes`, `map`, `read`, `run`), and bare mode fires
     #: them whenever somebody types one.
     require_prefix: bool = field(default_factory=lambda: _env_bool("DCSS_REQUIRE_PREFIX", False))
+    #: Pause between the steps of a multi-step macro. Menus need time to
+    #: re-render, and a macro that races ahead reads the previous screen.
+    macro_step_delay: float = field(default_factory=lambda: _env_float("DCSS_MACRO_STEP_DELAY", 0.6))
     #: Pause between the keys `.dcss/neutral` sends while backing out.
     neutral_step_delay: float = field(default_factory=lambda: _env_float("DCSS_NEUTRAL_STEP_DELAY", 0.4))
 

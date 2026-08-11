@@ -211,6 +211,10 @@ class DiscordRelay(discord.Client):
             await self._retire_start_message()
             return
 
+        if event.kind == "notice":
+            await self.post(event.detail)
+            return
+
         if event.kind == "error":
             await self.post(f"⚠️ {event.detail}")
 

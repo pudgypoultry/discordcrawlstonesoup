@@ -77,5 +77,12 @@ turn game output into Discord posts; `discordbot.py` is the gateway side.
 - `text_cursor` alone means a text field is active. Crawl's message-line
   prompts (Ctrl-F, travel) leave `input_mode` at NORMAL and push nothing onto
   the UI stack, so requiring a menu there misreads them as ordinary play.
+- Skill hotkeys are positional and differ between the "useful" and "all"
+  views, and past ~26 skills they become digits, which the target prompt
+  (`[a-z]`) will not take. `skills.py` reads them off the menu; never hardcode
+  a skill-to-key table.
+- The skill menu arrives as `txt` with `id: menu_txt`, HTML spans and
+  entities, two columns per line, and only the *changed* lines each update —
+  so merge rather than replace, and clear before driving it.
 - Test against `dcssbot.mockserver`, not a live server. `scripts/probe.py` is
   the one-keystroke debugging tool.

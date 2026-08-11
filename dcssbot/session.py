@@ -28,12 +28,18 @@ from .cmdqueue import CommandQueue, QueuedCommand
 from .config import Config
 from .gamestate import STUCK_CONTEXTS, GameState, InputContext
 from .grammar import Kind, Step, allowed_in, is_safe_to_send
+from .keys import KEY_ENTER
+from .skills import SkillMenuError, SkillRow, find_skill, parse_skill_menu
 from .msglog import LogLine, MessageLog
 
 log = logging.getLogger(__name__)
 
 LineSink = Callable[[list[LogLine]], Awaitable[None]]
 EventSink = Callable[["GameEvent"], Awaitable[None]]
+
+
+class MacroError(Exception):
+    """A multi-step macro could not be carried out."""
 
 
 @dataclass(frozen=True)
@@ -320,7 +326,131 @@ class GameSession:
                 await client.send_keycode(step.keycode)
             elif step.kind is Kind.RECOVER:
                 await self.escape_to_neutral()
+            elif step.kind is Kind.MACRO:
+                await self._run_macro(step.text)
         self._last_send = time.monotonic()
+
+    async def _run_macro(self, argument: str) -> None:
+        """Run a macro and report the outcome, success or failure.
+
+        Macros take several seconds and a dozen keystrokes, so silence about
+        one that did not work would be indistinguishable from a bot that has
+        wandered off.
+        """
+        try:
+            detail = await self.train_only(argument)
+        except MacroError as exc:
+            log.info("train macro failed: %s", exc)
+            await self.on_event(GameEvent("notice", f"Could not set training: {exc}"))
+        except Exception:
+            log.exception("train macro blew up")
+            await self.on_event(GameEvent("notice", "The training macro failed."))
+        else:
+            log.info("%s", detail)
+            await self.on_event(GameEvent("notice", detail))
+
+    async def train_only(self, query: str) -> str:
+        """Train one skill exclusively and set its target to the next level.
+
+        Drives the skill screen the way a player would: ``m`` to open it,
+        Shift plus the skill's key to make it the only thing being trained,
+        then ``=``, the key again, the number and Enter.
+
+        The keys are read off the menu rather than hardcoded, because crawl
+        assigns them by position — Unarmed Combat is ``b`` in the "useful"
+        view and ``f`` in the "all" view, and both shift as a character gains
+        skills. The current level comes from the same place, since nothing
+        else in the protocol reports it.
+        """
+        client = self.client
+        if client is None or not client.connected:
+            raise MacroError("not connected to a game")
+
+        step = self.config.macro_step_delay
+        await self._open_skill_menu(step)
+        try:
+            row = await self._find_skill_row(query, step)
+            target = row.next_target
+
+            # Shift plus the key trains this skill and nothing else.
+            await client.send_text(row.key.upper())
+            await asyncio.sleep(step)
+
+            # The menu re-renders, and the keys can move with it.
+            row = await self._find_skill_row(query, step, reopen=False)
+
+            await client.send_text("=")
+            await asyncio.sleep(step)
+            await client.send_text(row.key)
+            await asyncio.sleep(step)
+            for digit in str(target):
+                await client.send_text(digit)
+                await asyncio.sleep(0.15)
+            await client.send_keycode(KEY_ENTER)
+            await asyncio.sleep(step)
+        finally:
+            await self.escape_to_neutral()
+        self._last_send = time.monotonic()
+        return (
+            f"Training **{row.name}** only (was {row.level:g}), "
+            f"target set to {target}."
+        )
+
+    async def _open_skill_menu(self, step: float) -> None:
+        client = self.client
+        assert client is not None
+        # Start from normal play: `m` typed into another menu is a selection.
+        if self.state.context is not InputContext.PLAY:
+            await self.escape_to_neutral()
+        self.state.clear_menu()
+        await client.send_text("m")
+        if not await self._await_skill_rows(step):
+            raise MacroError("the skill screen did not open")
+
+    async def _await_skill_rows(self, step: float) -> bool:
+        """Wait for the menu to render at least one skill row."""
+        deadline = time.monotonic() + max(4.0, step * 8)
+        while time.monotonic() < deadline:
+            if parse_skill_menu(self.state.menu_lines):
+                return True
+            await asyncio.sleep(0.1)
+        return False
+
+    async def _find_skill_row(
+        self, query: str, step: float, *, reopen: bool = True
+    ) -> SkillRow:
+        """Locate a skill, switching the menu's view if it is not listed here.
+
+        The "useful skills" view hides skills the character has no aptitude
+        for, and past twenty-odd skills the keys spill into digits — which the
+        target prompt does not accept, since its own footer says ``[a-z]``. In
+        either case ``*`` toggles to the other view, where it may have a
+        letter.
+        """
+        client = self.client
+        assert client is not None
+        if reopen and not await self._await_skill_rows(step):
+            raise MacroError("the skill screen did not open")
+
+        for attempt in range(2):
+            rows = parse_skill_menu(self.state.menu_lines)
+            try:
+                row = find_skill(rows, query)
+            except SkillMenuError as exc:
+                if attempt:
+                    raise MacroError(str(exc)) from exc
+            else:
+                if row.key.isalpha():
+                    return row
+                if attempt:
+                    raise MacroError(
+                        f"{row.name} is listed under {row.key!r} here, and the "
+                        "target prompt only takes a-z"
+                    )
+            # Switch between the useful and all views and look again.
+            await client.send_text("*")
+            await asyncio.sleep(step)
+        raise MacroError(f"could not find a skill matching {query!r}")
 
     async def escape_to_neutral(self, max_steps: int = 10) -> bool:
         """Back out of whatever is on screen until normal play resumes.

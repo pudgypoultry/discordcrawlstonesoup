@@ -164,7 +164,8 @@ appeared, the game side never got in.
 | `DCSS_REQUIRE_PREFIX` | `false` | Require `.dcss/` on keys too, keeping the channel chattable |
 | `DCSS_ENFORCE_CONTEXT` | `false` | Drop commands that do not fit the current screen |
 | `DCSS_BLOCK_DANGEROUS_KEYS` | `false` | Keep `S`, `~`, `&`, Ctrl- out of normal play |
-| `DCSS_NEUTRAL_STEP_DELAY` | `0.4` | Pause between keys while `.dcss/neutral` backs out |
+| `DCSS_NEUTRAL_STEP_DELAY` | `0.4` | Pause between keys while `neutral` backs out |
+| `DCSS_MACRO_STEP_DELAY` | `0.6` | Pause between the steps of `train`, so menus can re-render |
 
 `DCSS_COMMAND_INTERVAL` below `0.1` is refused: public servers ask API clients
 to stay under 10 commands per second, and anarchy input is more watchable well
@@ -205,6 +206,15 @@ is **held back unless the game is in ordinary play**. A run has no meaning in
 a menu and a control key there can do something surprising. Single keys are
 unaffected and still go through anywhere.
 
+`train <skill>` makes one skill the only thing being trained and sets its
+target to the next whole level — `train fighting` at 3.3 targets 4. It drives
+the skill screen the way a player would (`m`, Shift-key, `=`, key, number,
+Enter) and reads the keys off the menu rather than assuming them, because
+crawl assigns them by position: Unarmed Combat is `b` in the "useful" view and
+`f` in the "all" view, and both shift as a character gains skills. Partial
+names work (`train unarmed`, `train maces`); an ambiguous one is refused with
+the options rather than guessed at.
+
 `neutral` backs out of whatever is on screen — menu, prompt, targeting, text
 field — until normal play resumes, re-reading the situation after each key
 rather than sending a fixed sequence.
@@ -230,7 +240,7 @@ codes out of normal play if one person ending every run becomes a problem.
 ## Development
 
 ```sh
-python -m pytest                      # 198 tests, no network needed
+python -m pytest                      # 262 tests, no network needed
 python -m dcssbot.mockserver          # a stand-in WebTiles server
 python scripts/probe.py --key o       # connect, send one key, print the JSON
 ```

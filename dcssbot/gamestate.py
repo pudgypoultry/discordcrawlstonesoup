@@ -91,6 +91,11 @@ class GameState:
     text_cursor: bool = False
     #: Last ``player`` message fields we care about, for the status line.
     player: dict[str, Any] = field(default_factory=dict)
+    #: Tag of the CRT menu currently open, e.g. "skills".
+    menu_tag: str | None = None
+    #: Rendered lines of that menu, merged from ``txt`` updates. Crawl sends
+    #: only the rows that changed, so these accumulate rather than replace.
+    menu_lines: dict[str, str] = field(default_factory=dict)
     #: Monotonic time of the last context change.
     context_since: float = field(default_factory=time.monotonic)
 
@@ -133,9 +138,19 @@ class GameState:
             self.ui_stack_depth = len(items) if isinstance(items, list) else 0
         elif kind == "close_all_menus":
             self.ui_stack_depth = 0
+            self.clear_menu()
         elif kind == "menu":
             # A bare `menu` outside a ui-push still means something is open.
             self.ui_stack_depth = max(self.ui_stack_depth, 1)
+            self.menu_tag = msg.get("tag") if isinstance(msg.get("tag"), str) else None
+            self.menu_lines.clear()
+        elif kind == "txt":
+            if msg.get("id") == "menu_txt":
+                lines = msg.get("lines")
+                if isinstance(lines, dict):
+                    self.menu_lines.update(
+                        {str(k): str(v) for k, v in lines.items()}
+                    )
         elif kind == "text_cursor":
             self.text_cursor = bool(msg.get("enabled"))
         elif kind == "msgs":
@@ -149,7 +164,17 @@ class GameState:
 
         self._refresh_context()
 
+    def clear_menu(self) -> None:
+        """Forget the current menu's contents.
+
+        Called before driving a menu, so a macro cannot read the leftovers of
+        a screen that has already closed.
+        """
+        self.menu_tag = None
+        self.menu_lines.clear()
+
     def _reset_ui(self) -> None:
+        self.clear_menu()
         self.ui_stack_depth = 0
         self.ui_state = UIState.NORMAL
         self.more = False

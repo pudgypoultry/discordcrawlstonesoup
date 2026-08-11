@@ -430,3 +430,134 @@ async def test_text_entry_blocks_combinations_too(
         assert {"msg": "input", "text": "U"} not in server.sessions[0].received_keys
     finally:
         await shutdown(session, task)
+
+
+class SkillMenuServer(MockWebTilesServer):
+    """A mock that answers `m` with a skill screen and drives it like crawl.
+
+    Only the parts the macro touches: opening, the `*` view toggle, Shift to
+    train one skill, and `=` plus a key to set a target.
+    """
+
+    USEFUL = {
+        "1": "  a + Fighting         2.0   7%     0    b + Dodging          2.0   8%   0",
+    }
+    ALL = {
+        "1": "  a + Fighting         2.0   7%     0    c + Axes             0.0        0",
+        "2": "  b + Dodging          2.0   8%     0    0 + Evocations       0.0       +1",
+    }
+
+    def __init__(self, **kw) -> None:
+        super().__init__(**kw)
+        self.showing_all = False
+        self.trained: str | None = None
+        self.target_for: str | None = None
+        self.typed = ""
+
+    async def _render(self, session: Session) -> None:
+        await self.send_batch(session, [
+            {"msg": "menu", "type": "crt", "tag": "skills"},
+            {"msg": "txt", "id": "menu_txt",
+             "lines": self.ALL if self.showing_all else self.USEFUL},
+        ])
+
+    async def on_input(self, session: Session, obj: dict) -> None:
+        text = obj.get("text", "")
+        if obj.get("msg") == "key" and obj.get("keycode") == KEY_ESCAPE:
+            await self.send_batch(session, [{"msg": "close_all_menus"}])
+            return
+        if text == "m":
+            await self._render(session)
+        elif text == "*":
+            self.showing_all = not self.showing_all
+            await self._render(session)
+        elif text.isalpha() and text.isupper():
+            self.trained = text.lower()
+        elif text == "=":
+            self.target_for = ""
+        elif self.target_for == "" and text:
+            self.target_for = text
+        elif text.isdigit():
+            self.typed += text
+
+
+async def test_the_train_macro_drives_the_skill_screen(
+    server: MockWebTilesServer,
+) -> None:
+    mock = SkillMenuServer(ping_interval=30.0)
+    await mock.start()
+    session = task = None
+    try:
+        session, queue, recorder, task = await running_session(
+            mock, macro_step_delay=0.05, neutral_step_delay=0.05
+        )
+        detail = await session.train_only("fighting")
+        assert "Fighting" in detail and "target set to 3" in detail
+        assert mock.trained == "a"       # Shift-a
+        assert mock.target_for == "a"    # = then a
+        assert mock.typed == "3"         # floor(2.0) + 1
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_the_macro_switches_view_for_a_skill_not_listed(
+    server: MockWebTilesServer,
+) -> None:
+    # Axes only appears in the "all" view, so the macro has to press `*`.
+    mock = SkillMenuServer(ping_interval=30.0)
+    await mock.start()
+    session = task = None
+    try:
+        session, queue, _, task = await running_session(
+            mock, macro_step_delay=0.05, neutral_step_delay=0.05
+        )
+        detail = await session.train_only("axes")
+        assert "Axes" in detail and "target set to 1" in detail
+        assert mock.showing_all
+        assert mock.trained == "c"
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_the_macro_reports_an_unknown_skill(server: MockWebTilesServer) -> None:
+    from dcssbot.session import MacroError
+
+    mock = SkillMenuServer(ping_interval=30.0)
+    await mock.start()
+    session = task = None
+    try:
+        session, _, _, task = await running_session(
+            mock, macro_step_delay=0.05, neutral_step_delay=0.05
+        )
+        with pytest.raises(MacroError, match="basketweaving"):
+            await session.train_only("basketweaving")
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_a_failed_macro_is_announced_rather_than_silent(
+    server: MockWebTilesServer,
+) -> None:
+    mock = SkillMenuServer(ping_interval=30.0)
+    await mock.start()
+    session = task = None
+    try:
+        session, queue, recorder, task = await running_session(
+            mock, macro_step_delay=0.05, neutral_step_delay=0.05
+        )
+        queue.put(parse("train basketweaving"), "alice")  # type: ignore[arg-type]
+        await wait_until(
+            lambda: any(e.kind == "notice" for e in recorder.events),
+            what="the failure notice",
+        )
+        assert "Could not set training" in recorder.events[-1].detail
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()
