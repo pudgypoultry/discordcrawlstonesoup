@@ -556,8 +556,159 @@ async def test_a_failed_macro_is_announced_rather_than_silent(
             lambda: any(e.kind == "notice" for e in recorder.events),
             what="the failure notice",
         )
-        assert "Could not set training" in recorder.events[-1].detail
+        assert "Could not train" in recorder.events[-1].detail
     finally:
         if session and task:
             await shutdown(session, task)
         await mock.stop()
+
+
+class ItemMenuServer(MockWebTilesServer):
+    """A mock that answers `q`/`r` with crawl's `use_item` menu."""
+
+    POTIONS = [
+        {"text": "Potions", "level": 1},
+        {"text": " L - a potion of lignification", "q": 1, "hotkeys": [76], "level": 2},
+        {"text": " d - 4 bubbling green potions", "q": 4, "hotkeys": [100], "level": 2},
+        {"text": " f - 2 white potions", "q": 2, "hotkeys": [102], "level": 2},
+    ]
+    SCROLLS = [
+        {"text": "Scrolls", "level": 1},
+        {"text": " c - 4 scrolls labelled LOUNOCVILOA", "q": 4, "hotkeys": [99], "level": 2},
+        {"text": " e - 3 scrolls labelled XYDIOF MEIRA", "q": 3, "hotkeys": [101], "level": 2},
+    ]
+
+    def __init__(self, *, potions=True, scrolls=True, **kw) -> None:
+        super().__init__(**kw)
+        self.has_potions = potions
+        self.has_scrolls = scrolls
+        self.chosen: str | None = None
+        self.menu_open = False
+
+    async def on_input(self, session: Session, obj: dict) -> None:
+        text = obj.get("text", "")
+        if obj.get("msg") == "key" and obj.get("keycode") == KEY_ESCAPE:
+            self.menu_open = False
+            await self.send_batch(session, [{"msg": "close_all_menus"}])
+            return
+        if text == "q" and self.has_potions:
+            self.menu_open = True
+            await self.send_batch(session, [
+                {"msg": "menu", "tag": "use_item", "items": self.POTIONS}])
+        elif text == "r" and self.has_scrolls:
+            self.menu_open = True
+            await self.send_batch(session, [
+                {"msg": "menu", "tag": "use_item", "items": self.SCROLLS}])
+        elif self.menu_open and text:
+            self.chosen = text
+            self.menu_open = False
+            await self.send_batch(session, [{"msg": "close_all_menus"}])
+
+
+async def _with_items(**kw):
+    mock = ItemMenuServer(ping_interval=30.0, **kw)
+    await mock.start()
+    return mock
+
+
+async def test_quaff_by_name_picks_the_right_letter(server: MockWebTilesServer) -> None:
+    mock = await _with_items()
+    session = task = None
+    try:
+        session, _, _, task = await running_session(
+            mock, macro_step_delay=0.05, neutral_step_delay=0.05
+        )
+        detail = await session.use_item("quaff", "lignification")
+        assert mock.chosen == "L"
+        assert "potion of lignification" in detail
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_quaff_unknown_prefers_the_biggest_stack(
+    server: MockWebTilesServer,
+) -> None:
+    mock = await _with_items()
+    session = task = None
+    try:
+        session, _, _, task = await running_session(
+            mock, macro_step_delay=0.05, neutral_step_delay=0.05
+        )
+        detail = await session.use_item("quaff", "unknown")
+        assert mock.chosen == "d"          # 4 of them, not the 2 white ones
+        assert "unidentified" in detail
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_read_unknown_uses_the_scroll_list(server: MockWebTilesServer) -> None:
+    mock = await _with_items()
+    session = task = None
+    try:
+        session, _, _, task = await running_session(
+            mock, macro_step_delay=0.05, neutral_step_delay=0.05
+        )
+        await session.use_item("read", "unknown")
+        assert mock.chosen == "c"          # 4 labelled LOUNOCVILOA
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_an_item_not_carried_fails_without_sending_a_key(
+    server: MockWebTilesServer,
+) -> None:
+    from dcssbot.session import MacroError
+
+    mock = await _with_items()
+    session = task = None
+    try:
+        session, _, _, task = await running_session(
+            mock, macro_step_delay=0.05, neutral_step_delay=0.05
+        )
+        with pytest.raises(MacroError, match="curing"):
+            await session.use_item("quaff", "curing")
+        # Nothing was selected, and the screen was put back.
+        assert mock.chosen is None
+        await wait_until(
+            lambda: session.state.context is InputContext.PLAY,
+            what="the menu to close",
+        )
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_no_potions_at_all_is_reported(server: MockWebTilesServer) -> None:
+    from dcssbot.session import MacroError
+
+    # Crawl declines to open a menu when you carry none, so the macro has to
+    # give up on a timeout rather than wait forever.
+    mock = await _with_items(potions=False)
+    session = task = None
+    try:
+        session, _, _, task = await running_session(
+            mock, macro_step_delay=0.05, neutral_step_delay=0.05
+        )
+        with pytest.raises(MacroError, match="no potions"):
+            await session.use_item("quaff", "unknown")
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_bare_quaff_is_still_just_the_key(server: MockWebTilesServer) -> None:
+    session, queue, _, task = await running_session(server)
+    try:
+        queue.put(parse("quaff"), "alice")  # type: ignore[arg-type]
+        await asyncio.sleep(0.3)
+        assert {"msg": "input", "text": "q"} in server.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)

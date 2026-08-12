@@ -84,5 +84,10 @@ turn game output into Discord posts; `discordbot.py` is the gateway side.
 - The skill menu arrives as `txt` with `id: menu_txt`, HTML spans and
   entities, two columns per line, and only the *changed* lines each update —
   so merge rather than replace, and clear before driving it.
+- The item menu (`use_item`) is *structured*, unlike the skill screen: the
+  `menu` message carries `items` with `text`, `hotkeys` and `q` (stack size).
+  `q` then a letter uses the item outright — two keys, not three.
+- Identified potions and scrolls read "potion of X" / "scroll of X"; anything
+  else is unidentified (`item-name.cc`). That is the whole "unknown" test.
 - Test against `dcssbot.mockserver`, not a live server. `scripts/probe.py` is
   the one-keystroke debugging tool.

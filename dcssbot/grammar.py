@@ -121,6 +121,9 @@ class Command:
     key: str = ""
     meta: bool = False
     takes_argument: bool = False
+    #: May take an argument but works without one: `quaff` alone opens the
+    #: potion list, `quaff haste` drinks a specific one.
+    optional_argument: bool = False
     #: Anything that combines keys — a doubled direction, a modifier, a run.
     #: These are only meaningful during ordinary play: inside a menu a run has
     #: no meaning and a control key can do something surprising, so they are
@@ -145,6 +148,7 @@ def _cmd(
     *,
     meta: bool = False,
     takes_argument: bool = False,
+    optional_argument: bool = False,
     multi_key: bool = False,
 ) -> Command:
     return Command(
@@ -155,6 +159,7 @@ def _cmd(
         key=key,
         meta=meta,
         takes_argument=takes_argument,
+        optional_argument=optional_argument,
         multi_key=multi_key,
     )
 
@@ -221,8 +226,12 @@ _COMMAND_LIST += [
     _cmd("puton", _text("P"), PLAY_ONLY, "put on jewellery", "P"),
     _cmd("remove", _text("R"), PLAY_ONLY, "remove jewellery", "R"),
     _cmd("drop", _text("d"), PLAY_ONLY, "drop an item", "d"),
-    _cmd("quaff", _text("q"), PLAY_ONLY, "quaff a potion", "q"),
-    _cmd("read", _text("r"), PLAY_ONLY, "read a scroll", "r"),
+    _cmd("quaff", _text("q"), PLAY_ONLY,
+         "quaff a potion; `quaff haste` or `quaff unknown` picks one", "q",
+         optional_argument=True),
+    _cmd("read", _text("r"), PLAY_ONLY,
+         "read a scroll; `read fog` or `read unknown` picks one", "r",
+         optional_argument=True),
     _cmd("eat", _text("e"), PLAY_ONLY, "eat", "e"),
     _cmd("fire", _text("f"), PLAY_ONLY, "fire the quivered action", "f"),
     _cmd("quiver", _text("Q"), PLAY_ONLY, "choose what to quiver", "Q"),
@@ -259,8 +268,9 @@ COMMANDS: dict[str, Command] = {c.name: c for c in _COMMAND_LIST}
 #: A single character is sent as itself. ASCII printable, excluding space —
 #: `.dcss/space` covers that, since a trailing space is invisible in chat.
 _LITERAL_CHAR = re.compile(r"^[\x21-\x7e]$")
-#: Skill names: letters, spaces and the ampersand in "Maces & Flails".
-_SKILL_RE = re.compile(r"^[A-Za-z][A-Za-z&' ]{1,23}$")
+#: Skill and item names: letters, spaces, and the ampersand in
+#: "Maces & Flails". Long enough for "scroll labelled XYDIOF MEIRA".
+_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z&' ]{1,31}$")
 #: Text fields get a conservative subset; no control or markup characters.
 _TEXT_RE = re.compile(r"^[A-Za-z0-9 _'-]{1,32}$")
 
@@ -381,7 +391,7 @@ def _parse_body(body: str) -> ParsedCommand:
     if command is None:
         raise ParseError(f"unknown command `{_sanitise(token)}`")
 
-    if command.takes_argument:
+    if command.takes_argument or (argument and command.optional_argument):
         return _parse_argument(command, argument)
     if argument:
         raise ParseError(f"`{command.name}` takes no argument")
@@ -405,12 +415,16 @@ def _parse_argument(command: Command, argument: str) -> ParsedCommand:
     if command.name in ("ctrl", "shift"):
         return _parse_modified(command, argument)
 
-    if command.name == "train":
-        if not _SKILL_RE.match(argument):
-            raise ParseError("train takes a skill name, e.g. `train fighting`")
+    if command.name in ("train", "quaff", "read"):
+        if not _NAME_RE.match(argument):
+            raise ParseError(
+                f"{command.name} takes a name, e.g. `{command.name} "
+                + ("fighting`" if command.name == "train" else "unknown`")
+            )
         return ParsedCommand(
             command=command,
-            steps=(Step(Kind.MACRO, text=argument),),
+            # The session needs to know which macro as well as its argument.
+            steps=(Step(Kind.MACRO, text=f"{command.name}:{argument}"),),
             argument=argument.lower(),
         )
 
@@ -508,7 +522,7 @@ _HELP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "look", "char", "skills", "religion", "resists",
     )),
     ("Combinations (normal play only)", ("run", "ctrl", "shift")),
-    ("Prompts", ("yes", "no", "more", "text", "neutral", "train")),
+    ("Prompts", ("yes", "no", "more", "text", "neutral")),
     ("Bot", ("link", "status", "help")),
 )
 
@@ -536,8 +550,12 @@ def help_text(prefix: str = ".dcss/") -> str:
         if entries:
             lines.append(f"**{title}**: {', '.join(entries)}")
     lines.append(
-        f"Bot commands keep the prefix, so nobody fires them by chatting: "
-        f"`{prefix}help` `{prefix}link` `{prefix}status`. The prefix also still "
-        f"works on any key — `{prefix}o` is the same as `o`."
+        "**Shortcuts** (normal play only): `quaff <potion>`, `read <scroll>`, "
+        "`quaff unknown` / `read unknown` for the largest unidentified stack, "
+        "`train <skill>` to train it alone toward the next level."
+    )
+    lines.append(
+        f"Bot commands keep the prefix: `{prefix}help` `{prefix}link` "
+        f"`{prefix}status`. The prefix also works on any key."
     )
     return "\n".join(lines)

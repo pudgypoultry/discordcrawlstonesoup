@@ -96,6 +96,9 @@ class GameState:
     #: Rendered lines of that menu, merged from ``txt`` updates. Crawl sends
     #: only the rows that changed, so these accumulate rather than replace.
     menu_lines: dict[str, str] = field(default_factory=dict)
+    #: Selectable rows of a structured menu (inventory, `use_item`). Unlike
+    #: the CRT screens, these arrive as data rather than rendered text.
+    menu_items: list[Any] = field(default_factory=list)
     #: Monotonic time of the last context change.
     context_since: float = field(default_factory=time.monotonic)
 
@@ -144,6 +147,8 @@ class GameState:
             self.ui_stack_depth = max(self.ui_stack_depth, 1)
             self.menu_tag = msg.get("tag") if isinstance(msg.get("tag"), str) else None
             self.menu_lines.clear()
+            items = msg.get("items")
+            self.menu_items = list(items) if isinstance(items, list) else []
         elif kind == "txt":
             if msg.get("id") == "menu_txt":
                 lines = msg.get("lines")
@@ -172,6 +177,7 @@ class GameState:
         """
         self.menu_tag = None
         self.menu_lines.clear()
+        self.menu_items.clear()
 
     def _reset_ui(self) -> None:
         self.clear_menu()

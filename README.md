@@ -206,6 +206,20 @@ is **held back unless the game is in ordinary play**. A run has no meaning in
 a menu and a control key there can do something surprising. Single keys are
 unaffected and still go through anywhere.
 
+`quaff <potion>` and `read <scroll>` do the whole thing in one message: they
+open crawl's own item list, find the item and press its letter. Two keys, not
+three — verified against 0.34.1, where selecting from that list uses the item
+directly. The letter is read off the live menu, because inventory letters move
+as items are picked up and used. If the item is not carried, nothing is sent
+beyond opening the menu and the screen is put back to normal play.
+
+`quaff unknown` and `read unknown` try an unidentified item, choosing the
+largest stack first and breaking ties alphabetically so the choice is
+reproducible. Identified and unidentified are told apart by crawl's own
+naming: `item-name.cc` writes "potion of X" / "scroll of X" only once
+identified, and describes the rest by appearance ("bubbling green potion",
+"scroll labelled XYDIOF MEIRA").
+
 `train <skill>` makes one skill the only thing being trained and sets its
 target to the next whole level — `train fighting` at 3.3 targets 4. It drives
 the skill screen the way a player would (`m`, Shift-key, `=`, key, number,
@@ -240,7 +254,7 @@ codes out of normal play if one person ending every run becomes a problem.
 ## Development
 
 ```sh
-python -m pytest                      # 262 tests, no network needed
+python -m pytest                      # 285 tests, no network needed
 python -m dcssbot.mockserver          # a stand-in WebTiles server
 python scripts/probe.py --key o       # connect, send one key, print the JSON
 ```

@@ -29,6 +29,7 @@ from .config import Config
 from .gamestate import STUCK_CONTEXTS, GameState, InputContext
 from .grammar import Kind, Step, allowed_in, is_safe_to_send
 from .keys import KEY_ENTER
+from .items import ItemMenuError, ItemRow, find_item, parse_item_menu, pick_unknown
 from .skills import SkillMenuError, SkillRow, find_skill, parse_skill_menu
 from .msglog import LogLine, MessageLog
 
@@ -293,7 +294,11 @@ class GameSession:
     async def _dispatch(self, item: QueuedCommand) -> None:
         context = self.state.context
         command = item.parsed.command
-        if command.multi_key and context is not InputContext.PLAY:
+        # A macro drives menus itself, so it has to start from normal play
+        # for the same reason a run does. Bare `quaff` is just the key `q` and
+        # stays unrestricted.
+        is_macro = any(s.kind is Kind.MACRO for s in item.parsed.steps)
+        if (command.multi_key or is_macro) and context is not InputContext.PLAY:
             # Runs and modifier combinations only mean anything during ordinary
             # play. Inside a menu a run is nonsense and a control key can do
             # something surprising, so these are held back there whatever
@@ -330,21 +335,27 @@ class GameSession:
                 await self._run_macro(step.text)
         self._last_send = time.monotonic()
 
-    async def _run_macro(self, argument: str) -> None:
+    async def _run_macro(self, payload: str) -> None:
         """Run a macro and report the outcome, success or failure.
 
-        Macros take several seconds and a dozen keystrokes, so silence about
-        one that did not work would be indistinguishable from a bot that has
-        wandered off.
+        Macros take several seconds and a handful of keystrokes, so silence
+        about one that did not work would be indistinguishable from a bot that
+        has wandered off.
         """
+        verb, _, argument = payload.partition(":")
         try:
-            detail = await self.train_only(argument)
+            if verb == "train":
+                detail = await self.train_only(argument)
+            elif verb in ("quaff", "read"):
+                detail = await self.use_item(verb, argument)
+            else:  # pragma: no cover - the grammar cannot produce this
+                raise MacroError(f"unknown macro {verb!r}")
         except MacroError as exc:
-            log.info("train macro failed: %s", exc)
-            await self.on_event(GameEvent("notice", f"Could not set training: {exc}"))
+            log.info("%s macro failed: %s", verb, exc)
+            await self.on_event(GameEvent("notice", f"Could not {verb}: {exc}"))
         except Exception:
-            log.exception("train macro blew up")
-            await self.on_event(GameEvent("notice", "The training macro failed."))
+            log.exception("%s macro blew up", verb)
+            await self.on_event(GameEvent("notice", f"The {verb} macro failed."))
         else:
             log.info("%s", detail)
             await self.on_event(GameEvent("notice", detail))
@@ -395,6 +406,62 @@ class GameSession:
             f"Training **{row.name}** only (was {row.level:g}), "
             f"target set to {target}."
         )
+
+    async def use_item(self, verb: str, query: str) -> str:
+        """Quaff or read one item, chosen by name or by being unidentified.
+
+        Two keys, not three: `q` opens crawl's own potion list and pressing an
+        item's letter drinks it there and then — verified against 0.34.1. The
+        letter is read off that list rather than assumed, since inventory
+        letters move as items are picked up and used.
+
+        A miss is a complete failure by design: nothing is sent to the game
+        beyond opening the menu, and the screen is put back to normal play.
+        """
+        client = self.client
+        if client is None or not client.connected:
+            raise MacroError("not connected to a game")
+
+        open_key = "q" if verb == "quaff" else "r"
+        noun = "potion" if verb == "quaff" else "scroll"
+        step = self.config.macro_step_delay
+
+        if self.state.context is not InputContext.PLAY:
+            await self.escape_to_neutral()
+        self.state.clear_menu()
+        await client.send_text(open_key)
+
+        rows = await self._await_item_rows(step)
+        if rows is None:
+            # Crawl declines to open the menu at all when you have none, and
+            # says so in the log; there is nothing on screen to back out of.
+            await self.escape_to_neutral()
+            raise MacroError(f"no {noun}s in the inventory")
+
+        try:
+            if query.strip().lower() == "unknown":
+                row = pick_unknown(rows)
+            else:
+                row = find_item(rows, query)
+        except ItemMenuError as exc:
+            await self.escape_to_neutral()
+            raise MacroError(str(exc)) from exc
+
+        await client.send_text(row.key)
+        await asyncio.sleep(step)
+        self._last_send = time.monotonic()
+        which = "unidentified " if not row.identified else ""
+        return f"{verb.capitalize()}ing the {which}**{row.name}** ({row.key})."
+
+    async def _await_item_rows(self, step: float) -> list[ItemRow] | None:
+        """Wait for the item menu, or None if crawl never opened one."""
+        deadline = time.monotonic() + max(4.0, step * 8)
+        while time.monotonic() < deadline:
+            rows = parse_item_menu(self.state.menu_items)
+            if rows:
+                return rows
+            await asyncio.sleep(0.1)
+        return None
 
     async def _open_skill_menu(self, step: float) -> None:
         client = self.client
