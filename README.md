@@ -287,7 +287,7 @@ codes out of normal play if one person ending every run becomes a problem.
 ## Development
 
 ```sh
-python -m pytest                      # 285 tests, no network needed
+python -m pytest                      # 324 tests, no network needed
 python -m dcssbot.mockserver          # a stand-in WebTiles server
 python scripts/probe.py --key o       # connect, send one key, print the JSON
 ```
