@@ -94,3 +94,24 @@ _MARKDOWN_SPECIALS = re.compile(r"([\\`*_~|>#\-\[\]()])")
 def escape_markdown(text: str) -> str:
     """Escape text used outside a code block, e.g. a status line."""
     return _MARKDOWN_SPECIALS.sub(r"\\\1", text)
+
+
+# Crawl indents the continuation lines of a death record with a newline and a
+# fixed run of spaces — `_hiscore_newline_string` in `hiscores.cc`. That aligns
+# the text under the rank column of the local high-score list, a column Discord
+# never shows, so all the padding does here is produce a ragged block.
+_LEADING_SPACE = re.compile(r"^[ \t]+", re.MULTILINE)
+
+
+def death_report(text: str) -> str:
+    """Tidy the death record crawl puts in ``game_ended``'s ``message``.
+
+    That field is ``hiscores_format_single_long(se, true)`` — the same
+    several-line summary the game-over screen shows, naming the character, how
+    it died, where, and how long it lasted. It is plain text rather than a
+    format string, but it is stripped anyway on the principle that everything
+    reaching Discord goes through the same door.
+    """
+    stripped = _CONTROL_CHARS.sub("", strip_format(text))
+    lines = [_LEADING_SPACE.sub("", line).rstrip() for line in stripped.splitlines()]
+    return "\n".join(line for line in lines if line).strip()

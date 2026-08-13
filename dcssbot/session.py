@@ -31,9 +31,18 @@ from .grammar import Kind, Step, allowed_in, is_safe_to_send
 from .keys import KEY_ENTER
 from .items import ItemMenuError, ItemRow, find_item, parse_item_menu, pick_unknown
 from .skills import SkillMenuError, SkillRow, find_skill, parse_skill_menu
+from .formatting import death_report
 from .msglog import LogLine, MessageLog
 
 log = logging.getLogger(__name__)
+
+#: ``push_ui_layout`` types from ``newgame.cc``. The species/background screen,
+#: the weapon screen and the map screen all push ``newgame-choice``, so the
+#: layout name alone does not say which one is up; the reroll confirmation gets
+#: a layout of its own.
+NEWGAME_CHOICE = "newgame-choice"
+NEWGAME_CONFIRM = "newgame-random-combo"
+NEWGAME_LAYOUTS: frozenset[str] = frozenset({NEWGAME_CHOICE, NEWGAME_CONFIRM})
 
 LineSink = Callable[[list[LogLine]], Awaitable[None]]
 EventSink = Callable[["GameEvent"], Awaitable[None]]
@@ -50,6 +59,9 @@ class GameEvent:
     kind: str
     detail: str = ""
     url: str | None = None
+    #: For ``game_ended``, crawl's own exit type — "dead", "won", "quit",
+    #: "bailed out", "save", "abort", "crash" (`_exit_type_to_string`).
+    reason: str = ""
 
 
 class GameSession:
@@ -89,12 +101,28 @@ class GameSession:
         self._game_over = asyncio.Event()
         self._last_send = 0.0
         self._newgame_task: asyncio.Task[None] | None = None
+        #: Whether chat's keystrokes are allowed through to the game. Held shut
+        #: from the moment a character dies until the next one is standing in
+        #: the dungeon, because the creation screens are not a menu you can
+        #: blunder through: `_prompt_choice` and `_reroll_random` both take
+        #: Escape as `game_ended(game_exit::abort)`, so one stray queued key
+        #: would end the new run before it began.
+        self._accepting_input = asyncio.Event()
 
     # -- public API -------------------------------------------------------
 
     @property
     def in_game(self) -> bool:
         return self.state.in_game
+
+    @property
+    def accepting_input(self) -> bool:
+        """Whether chat's keys are currently reaching the game.
+
+        False while a character is being created — which is a game being in
+        progress but not yet playable, a state `in_game` alone cannot express.
+        """
+        return self._accepting_input.is_set()
 
     def spectate_url(self) -> str | None:
         if not self.state.in_game:
@@ -213,6 +241,10 @@ class GameSession:
 
     async def _start_game(self) -> None:
         assert self.client is not None
+        # Shut before `play`, not after: if there is no save the creation
+        # screens are already on their way back, and anything still queued from
+        # a previous connection would land on them.
+        self._accepting_input.clear()
         reply = await self.client.play(self.config.game_id)
         kind = reply.get("msg")
         if kind != "game_started":
@@ -224,6 +256,22 @@ class GameSession:
         self.last_error = None
         self.connect_started = None
         self._game_over.clear()
+        await self._enter_dungeon()
+
+    async def _enter_dungeon(self) -> None:
+        """Answer character creation, announce who turned up, reopen the gate.
+
+        Resuming an existing save shows no creation screens at all, in which
+        case this returns almost immediately — but the gate still has to be
+        reopened, hence the ``finally``. A creation that times out reopens it
+        too: a bot nobody can type at is worse than one parked on a screen
+        somebody in chat can work out how to leave.
+        """
+        try:
+            await self._create_character()
+        finally:
+            self._accepting_input.set()
+        await self._announce_game_start()
 
     def _register_handlers(self, client: WebTilesClient) -> None:
         client.on("*", self._on_message)
@@ -238,8 +286,6 @@ class GameSession:
         after = self.state.context
         if after is not before:
             log.debug("context %s -> %s", before.value, after.value)
-        if msg.get("msg") == "game_started":
-            await self._announce_game_start()
 
     async def _on_msgs(self, msg: dict[str, Any]) -> None:
         lines = self.log.feed(msg)
@@ -248,16 +294,25 @@ class GameSession:
 
     async def _on_game_ended(self, msg: dict[str, Any]) -> None:
         self._game_over.set()
+        # Close the gate here rather than in the restart task, so there is no
+        # window between the death and the restart in which queued keys are
+        # still being dispatched.
+        self._accepting_input.clear()
         dropped = self.queue.clear()
-        reason = str(msg.get("reason") or "over")
-        detail = str(msg.get("message") or "").strip()
+        reason = str(msg.get("reason") or "").strip()
+        # `message` is the several-line death record crawl builds for the
+        # game-over screen — who the character was, what killed it, where, and
+        # how long it lasted. That is the morgue summary; `dump` is the URL of
+        # the full morgue file, and only exists if the server templates one.
+        report = death_report(str(msg.get("message") or ""))
         dump = msg.get("dump")
-        log.info("game ended (%s); dropped %d queued commands", reason, dropped)
+        log.info("game ended (%s); dropped %d queued commands", reason or "?", dropped)
         await self.on_event(
             GameEvent(
                 "game_ended",
-                detail=detail or f"Game over ({reason}).",
+                detail=report,
                 url=str(dump) if dump else None,
+                reason=reason,
             )
         )
         if self.config.auto_restart:
@@ -267,8 +322,13 @@ class GameSession:
             )
 
     async def _announce_game_start(self) -> None:
+        who = self.state.character_description()
         await self.on_event(
-            GameEvent("game_started", detail="A new game is running.", url=self.spectate_url())
+            GameEvent(
+                "game_started",
+                detail=f"Now playing **{who}**." if who else "",
+                url=self.spectate_url(),
+            )
         )
 
     # -- outgoing ---------------------------------------------------------
@@ -282,8 +342,14 @@ class GameSession:
         TTL has already been checked against a stale clock.
         """
         while True:
+            await self._accepting_input.wait()
             await self._pace()
             item = await self.queue.get()
+            if not self._accepting_input.is_set():
+                # A character can die while we are blocked waiting for a
+                # command, which would otherwise let exactly one keystroke
+                # through into the new game's creation screens.
+                continue
             await self._dispatch(item)
 
     async def _pace(self) -> None:
@@ -514,10 +580,26 @@ class GameSession:
                         f"{row.name} is listed under {row.key!r} here, and the "
                         "target prompt only takes a-z"
                     )
-            # Switch between the useful and all views and look again.
+            # Switch between the useful and all views and look again. Waiting
+            # for the rows to actually change beats sleeping a fixed step: the
+            # redraw is a round trip plus a render, and a step that is merely
+            # usually long enough reports "no such skill" for a skill that is
+            # right there, just not drawn yet.
+            before = _skill_signature(rows)
             await client.send_text("*")
-            await asyncio.sleep(step)
+            await self._await_skill_view_change(before, step)
         raise MacroError(f"could not find a skill matching {query!r}")
+
+    async def _await_skill_view_change(
+        self, before: tuple[tuple[str, str], ...], step: float
+    ) -> None:
+        """Wait for the skill screen to redraw into the other view."""
+        deadline = time.monotonic() + max(4.0, step * 8)
+        while time.monotonic() < deadline:
+            rows = parse_skill_menu(self.state.menu_lines)
+            if rows and _skill_signature(rows) != before:
+                return
+            await asyncio.sleep(0.02)
 
     async def escape_to_neutral(self, max_steps: int = 10) -> bool:
         """Back out of whatever is on screen until normal play resumes.
@@ -562,6 +644,12 @@ class GameSession:
             await asyncio.sleep(interval)
             if not self.state.in_game or self.config.stuck_timeout <= 0:
                 continue
+            if not self._accepting_input.is_set():
+                # Character creation is on screen, and Escape is not a way out
+                # of it: both `_prompt_choice` and `_reroll_random` treat it as
+                # `game_ended(game_exit::abort)`. The creation loop owns the
+                # keyboard until it is finished.
+                continue
             if self.state.context not in STUCK_CONTEXTS:
                 continue
             if self.state.context_age < self.config.stuck_timeout:
@@ -586,6 +674,10 @@ class GameSession:
 
         Permadeath plus open input means this is load-bearing rather than a
         nicety: without it the bot sits in the lobby until someone notices.
+
+        The gate stays shut for the whole of this, the pause included. The new
+        game uses the same ``game_id``, so it comes up on the same crawl
+        version the previous character was playing.
         """
         try:
             await asyncio.sleep(self.config.restart_delay)
@@ -594,38 +686,101 @@ class GameSession:
                 return
             log.info("starting a new game")
             await client.play(self.config.game_id)
-            await self._answer_newgame_menus()
+            await self._enter_dungeon()
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("auto-restart failed")
+            # Whatever went wrong, leaving the keyboard locked would strand the
+            # channel with a bot that silently ignores everything.
+            self._accepting_input.set()
 
-    async def _answer_newgame_menus(self) -> None:
-        """Click through character creation.
+    async def _create_character(self) -> bool:
+        """Answer character creation, whatever screens this version puts up.
 
-        Only ever sends while a menu is genuinely open. Resuming an existing
-        save shows no creation screens, and firing ``#`` into the dungeon
-        because we assumed one was there is exactly the kind of mistake that
-        ends a run.
+        Driven off the layout crawl says is on screen rather than a fixed list
+        of keys, because the number of screens varies. ``!`` picks a random
+        species and background in one go; crawl then asks whether to keep the
+        combination it rolled; and a weapon screen appears only for backgrounds
+        that have a weapon choice at all — ``_choose_weapon`` returns early for
+        the rest. A fixed sequence therefore either leaves the last screen
+        unanswered or spills its surplus keys into the dungeon.
+
+        Nothing here sends Escape. On both creation layouts it is not "cancel
+        this screen" but ``game_ended(game_exit::abort)``.
         """
         client = self.client
         if client is None:
-            return
-        keys = (self.config.newgame_character_key, self.config.newgame_weapon_key)
-        deadline = time.monotonic() + 30.0
-        sent = 0
-        while time.monotonic() < deadline and sent < len(keys):
-            await asyncio.sleep(1.0)
-            if not client.connected:
-                return
-            if self.state.context is not InputContext.MENU:
-                if self.state.context is InputContext.PLAY and sent:
-                    return
-                continue
-            await client.send_text(keys[sent])
-            sent += 1
+            return False
+
+        deadline = time.monotonic() + self.config.newgame_timeout
+        # Which push we last answered. Successive screens report the same
+        # layout name, so without this the loop cannot tell the weapon screen
+        # from the species screen it has just answered, and keys go astray.
+        answered: int | None = None
+        picked_character = False
+        # When the creation screens first went away. Crawl pops each one before
+        # pushing the next, and in that gap nothing is on the UI stack and
+        # `input_mode` is back to COMMAND — indistinguishable from standing in
+        # the dungeon. So their absence has to hold for a moment to count.
+        settled_since: float | None = None
+
+        while time.monotonic() < deadline:
+            if not client.connected or self._stop.is_set():
+                return False
+
+            layout = self.state.ui_layout
+            screen = self.state.ui_push_count
+
+            if layout in NEWGAME_LAYOUTS:
+                settled_since = None
+                if screen != answered:
+                    if layout == NEWGAME_CONFIRM:
+                        key = self.config.newgame_confirm_key
+                    elif not picked_character:
+                        key = self.config.newgame_character_key
+                        picked_character = True
+                    else:
+                        key = self.config.newgame_weapon_key
+                    log.info("character creation: %s, sending %r", layout, key)
+                    await client.send_text(key)
+                    answered = screen
+            elif self.state.in_game:
+                # Anything that is not a creation screen — a menu, a prompt, a
+                # `--more--` on the welcome message — means creation is over
+                # and the game is putting up its own screens. Waiting for
+                # normal play specifically would stall here until the timeout,
+                # with the keyboard locked the whole time.
+                now = time.monotonic()
+                if settled_since is None:
+                    settled_since = now
+                elif now - settled_since >= self.config.newgame_settle:
+                    log.info("character is in the dungeon")
+                    return True
+            else:
+                # Not in a game yet; the creation screens may still be coming.
+                settled_since = None
+
+            await asyncio.sleep(self.config.newgame_poll_interval)
+
+        log.warning(
+            "character creation did not finish within %.0fs; last screen was %r",
+            self.config.newgame_timeout,
+            self.state.ui_layout,
+        )
+        return False
 
     def _cancel_newgame(self) -> None:
         if self._newgame_task is not None:
             self._newgame_task.cancel()
             self._newgame_task = None
+
+
+def _skill_signature(rows: list[SkillRow]) -> tuple[tuple[str, str], ...]:
+    """What a skill view looks like, for spotting a redraw into the other one.
+
+    Keys and names together: the two views differ both in which skills they
+    list and in the keys they assign, so either changing means the redraw has
+    landed.
+    """
+    return tuple((row.key, row.name) for row in rows)

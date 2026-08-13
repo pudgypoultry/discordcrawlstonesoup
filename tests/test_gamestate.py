@@ -138,3 +138,122 @@ def test_status_line_reads_from_player_messages() -> None:
 
 def test_status_line_is_none_without_player_data() -> None:
     assert GameState().status_line() is None
+
+
+# -- UI layout tracking -----------------------------------------------------
+#
+# `ui-push` carries the layout's `type` (`push_ui_layout` in tileweb.cc). It is
+# the only thing that tells character creation apart from an ordinary menu,
+# which matters because Escape aborts the game on the creation screens instead
+# of backing out of them.
+
+
+def test_ui_push_records_the_layout_type() -> None:
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle({"msg": "ui-push", "type": "newgame-choice"})
+    assert state.ui_layout == "newgame-choice"
+    assert state.context is InputContext.MENU
+
+
+def test_the_innermost_layout_is_the_current_one() -> None:
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle({"msg": "ui-push", "type": "newgame-choice"})
+    state.handle({"msg": "ui-push", "type": "describe-item"})
+    assert state.ui_layout == "describe-item"
+    state.handle({"msg": "ui-pop"})
+    assert state.ui_layout == "newgame-choice"
+    state.handle({"msg": "ui-pop"})
+    assert state.ui_layout is None
+
+
+def test_ui_stack_resynchronises_the_layouts() -> None:
+    # The server resends the whole stack on a spectator join, and it is
+    # authoritative — menu frames enter without a `ui-push`, so the
+    # incrementally-tracked list can drift.
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle({"msg": "ui-push", "type": "describe-item"})
+    state.handle(
+        {"msg": "ui-stack", "items": [{"type": "newgame-choice"}, {"msg": "menu"}]}
+    )
+    assert state.ui_layouts == ["newgame-choice", ""]
+    assert state.ui_stack_depth == 2
+
+
+def test_closing_all_menus_forgets_every_layout() -> None:
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle({"msg": "ui-push", "type": "newgame-choice"})
+    state.handle({"msg": "close_all_menus"})
+    assert state.ui_layout is None
+    assert state.ui_layouts == []
+
+
+def test_a_new_game_starts_with_no_layouts_left_over() -> None:
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle({"msg": "ui-push", "type": "newgame-choice"})
+    state.handle({"msg": "game_ended", "reason": "dead"})
+    state.handle({"msg": "game_started"})
+    assert state.ui_layout is None
+
+
+def test_the_push_count_separates_two_screens_of_the_same_kind() -> None:
+    # The species screen and the weapon screen both report `newgame-choice`.
+    # Without a counter there is no way to tell "still the screen I answered"
+    # from "the next one, which looks identical".
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle({"msg": "ui-push", "type": "newgame-choice"})
+    species = state.ui_push_count
+    state.handle({"msg": "ui-pop"})
+    state.handle({"msg": "ui-push", "type": "newgame-choice"})
+    assert state.ui_push_count != species
+
+
+def test_a_push_without_a_type_is_recorded_as_an_unnamed_layout() -> None:
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle({"msg": "ui-push"})
+    assert state.ui_layout == ""
+    assert state.context is InputContext.MENU
+
+
+def test_an_extra_pop_does_not_go_negative() -> None:
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle({"msg": "ui-pop"})
+    assert state.ui_layouts == []
+    assert state.ui_stack_depth == 0
+
+
+# -- character description --------------------------------------------------
+
+
+def test_character_description_combines_name_title_and_species() -> None:
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle(
+        {
+            "msg": "player",
+            "name": "Bloop",
+            "title": "the Skirmisher",
+            "species": "Minotaur",
+        }
+    )
+    assert state.character_description() == "Bloop the Skirmisher (Minotaur)"
+
+
+def test_character_description_is_none_before_any_player_data() -> None:
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    assert state.character_description() is None
+
+
+def test_character_description_copes_with_partial_player_data() -> None:
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle({"msg": "player", "name": "Bloop"})
+    assert state.character_description() == "Bloop"

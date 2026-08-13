@@ -99,6 +99,18 @@ class GameState:
     #: Selectable rows of a structured menu (inventory, `use_item`). Unlike
     #: the CRT screens, these arrive as data rather than rendered text.
     menu_items: list[Any] = field(default_factory=list)
+    #: ``type`` of each pushed UI layout, innermost last. ``push_ui_layout`` in
+    #: ``tileweb.cc`` writes it on every ``ui-push``, and it is the only thing
+    #: that tells the character-creation screens apart from an ordinary menu —
+    #: which matters because Escape on those two aborts the game rather than
+    #: backing out of them. Best-effort: menu frames enter the stack without a
+    #: ``ui-push``, so a ``ui-pop`` can remove the wrong entry; ``ui-stack``
+    #: rebuilds it authoritatively whenever the server resends the stack.
+    ui_layouts: list[str] = field(default_factory=list)
+    #: Bumped on every ``ui-push``. Successive creation screens report the same
+    #: layout type, so this is what distinguishes "the screen I already
+    #: answered" from "the next one that looks just like it".
+    ui_push_count: int = 0
     #: Monotonic time of the last context change.
     context_since: float = field(default_factory=time.monotonic)
 
@@ -134,13 +146,23 @@ class GameState:
                 self.ui_state = state
         elif kind == "ui-push":
             self.ui_stack_depth += 1
+            layout = msg.get("type")
+            self.ui_layouts.append(layout if isinstance(layout, str) else "")
+            self.ui_push_count += 1
         elif kind == "ui-pop":
             self.ui_stack_depth = max(0, self.ui_stack_depth - 1)
+            if self.ui_layouts:
+                self.ui_layouts.pop()
         elif kind == "ui-stack":
-            items = msg.get("items")
-            self.ui_stack_depth = len(items) if isinstance(items, list) else 0
+            items = msg.get("items") if isinstance(msg.get("items"), list) else []
+            self.ui_stack_depth = len(items)
+            self.ui_layouts = [
+                str(item.get("type") or "") if isinstance(item, dict) else ""
+                for item in items
+            ]
         elif kind == "close_all_menus":
             self.ui_stack_depth = 0
+            self.ui_layouts.clear()
             self.clear_menu()
         elif kind == "menu":
             # A bare `menu` outside a ui-push still means something is open.
@@ -182,6 +204,7 @@ class GameState:
     def _reset_ui(self) -> None:
         self.clear_menu()
         self.ui_stack_depth = 0
+        self.ui_layouts.clear()
         self.ui_state = UIState.NORMAL
         self.more = False
         self.text_cursor = False
@@ -194,6 +217,11 @@ class GameState:
     @property
     def context(self) -> InputContext:
         return self._context
+
+    @property
+    def ui_layout(self) -> str | None:
+        """``type`` of the innermost pushed UI layout, if there is one."""
+        return self.ui_layouts[-1] if self.ui_layouts else None
 
     @property
     def context_age(self) -> float:
@@ -238,6 +266,22 @@ class GameState:
         return InputContext.UNKNOWN
 
     # -- presentation -----------------------------------------------------
+
+    def character_description(self) -> str | None:
+        """Who is currently being played, or None before any ``player`` data.
+
+        ``title`` is crawl's ``player_title()`` — "the Skirmisher" — which
+        reflects the background; the background itself is never sent as its own
+        field, so the title stands in for it.
+        """
+        p = self.player
+        name = str(p.get("name") or "").strip()
+        title = str(p.get("title") or "").strip()
+        species = str(p.get("species") or "").strip()
+        who = " ".join(part for part in (name, title) if part)
+        if who and species:
+            return f"{who} ({species})"
+        return who or species or None
 
     def status_line(self) -> str | None:
         """A one-line HP/place summary, or None if we have no player data."""

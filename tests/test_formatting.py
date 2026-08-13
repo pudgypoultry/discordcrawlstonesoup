@@ -6,6 +6,7 @@ import pytest
 
 from dcssbot.formatting import (
     clean_line,
+    death_report,
     escape_for_code_block,
     escape_markdown,
     strip_format,
@@ -59,3 +60,44 @@ def test_escape_for_code_block_breaks_a_fence() -> None:
 
 def test_escape_markdown_escapes_item_name_punctuation() -> None:
     assert escape_markdown("a +2 long sword of *flaming*").count("\\") == 2
+
+
+# -- death reports ----------------------------------------------------------
+#
+# `game_ended`'s `message` is `hiscores_format_single_long(se, true)` — the
+# same summary the game-over screen shows. Continuation lines carry the 13
+# spaces `_hiscore_newline_string` adds to align them under the high-score
+# list's rank column, which is meaningless outside that list.
+
+REAL_DEATH_RECORD = (
+    "Bloop the Skirmisher (Minotaur Fighter)\n"
+    "             Began as a Minotaur Fighter on Aug 13, 2026.\n"
+    "             Slain by a jackal\n"
+    "             ... on level 2 of the Dungeon.\n"
+    "             The game lasted 00:03:12 (412 turns).\n"
+)
+
+
+def test_death_report_strips_the_high_score_indentation() -> None:
+    assert death_report(REAL_DEATH_RECORD) == (
+        "Bloop the Skirmisher (Minotaur Fighter)\n"
+        "Began as a Minotaur Fighter on Aug 13, 2026.\n"
+        "Slain by a jackal\n"
+        "... on level 2 of the Dungeon.\n"
+        "The game lasted 00:03:12 (412 turns)."
+    )
+
+
+def test_death_report_drops_blank_lines_and_trailing_space() -> None:
+    assert death_report("a\n\n   \nb   \n") == "a\nb"
+
+
+def test_death_report_of_nothing_is_empty() -> None:
+    assert death_report("") == ""
+    assert death_report("   \n  ") == ""
+
+
+def test_death_report_strips_colour_markup_and_control_characters() -> None:
+    assert death_report("Slain by a <lightred>jackal</lightred>\x07") == (
+        "Slain by a jackal"
+    )

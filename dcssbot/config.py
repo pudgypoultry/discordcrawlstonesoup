@@ -128,11 +128,29 @@ class Config:
     stuck_timeout: float = field(default_factory=lambda: _env_float("DCSS_STUCK_TIMEOUT", 45.0))
     auto_restart: bool = field(default_factory=lambda: _env_bool("DCSS_AUTO_RESTART", True))
     restart_delay: float = field(default_factory=lambda: _env_float("DCSS_RESTART_DELAY", 10.0))
-    #: newgame.cc: '#' picks a recommended species/background combination,
-    #: '!' a fully random one.
-    newgame_character_key: str = field(default_factory=lambda: _env("DCSS_NEWGAME_CHAR", "#"))
-    #: '*' is "random weapon" on the weapon screen, '+' random recommended.
+    #: newgame.cc: '!' is M_RANDOM_CHAR, a fully random species *and*
+    #: background. '#' is M_VIABLE_CHAR, which only draws from combinations the
+    #: game recommends — a narrower pool, and not what "random character" means.
+    newgame_character_key: str = field(default_factory=lambda: _env("DCSS_NEWGAME_CHAR", "!"))
+    #: Answers the "Do you want to play this combination? [Y/n/q]" popup that
+    #: `_reroll_random` puts up after a random character. Only 'n', Tab, '!' and
+    #: '#' reroll; 'q' and Escape abort the game outright, so this must never be
+    #: set to either of those.
+    newgame_confirm_key: str = field(default_factory=lambda: _env("DCSS_NEWGAME_CONFIRM", "y"))
+    #: Answers the choice screens that follow the character: the weapon screen,
+    #: and the map screen on game types that have one. '*' is "random" on all of
+    #: them; '+' is random-but-recommended on the weapon screen.
     newgame_weapon_key: str = field(default_factory=lambda: _env("DCSS_NEWGAME_WEAPON", "*"))
+    #: How often to look at what character creation is showing. Only one key
+    #: is ever sent per screen, so this paces looking rather than typing.
+    newgame_poll_interval: float = field(default_factory=lambda: _env_float("DCSS_NEWGAME_POLL", 0.15))
+    #: How long the game has to keep looking like ordinary play before creation
+    #: is called finished. Crawl pops each screen before pushing the next, and
+    #: during that gap the state is identical to being in the dungeon.
+    newgame_settle: float = field(default_factory=lambda: _env_float("DCSS_NEWGAME_SETTLE", 1.5))
+    #: How long to keep answering creation screens before giving up and letting
+    #: chat have the keyboard back.
+    newgame_timeout: float = field(default_factory=lambda: _env_float("DCSS_NEWGAME_TIMEOUT", 60.0))
     reconnect_delay: float = field(default_factory=lambda: _env_float("DCSS_RECONNECT_DELAY", 5.0))
     reconnect_max_delay: float = field(default_factory=lambda: _env_float("DCSS_RECONNECT_MAX_DELAY", 120.0))
 
@@ -154,6 +172,14 @@ class Config:
             raise ConfigError("missing required settings: " + ", ".join(missing))
         if not self.channel_ids:
             raise ConfigError("DISCORD_CHANNEL_IDS must list at least one channel")
+        # `_reroll_random` in newgame.cc: 'q' (and Escape) end the game before
+        # it starts, and 'n'/Tab/'!'/'#' reroll — which would spin until the
+        # creation timeout rather than ever accepting a character.
+        if self.newgame_confirm_key.lower() in {"q", "n", "\t", "!", "#"}:
+            raise ConfigError(
+                f"DCSS_NEWGAME_CONFIRM cannot be {self.newgame_confirm_key!r}: "
+                "'q' aborts the new game and 'n'/Tab/'!'/'#' reroll it forever"
+            )
         if self.command_interval < 0.1:
             raise ConfigError(
                 "DCSS_COMMAND_INTERVAL below 0.1s exceeds the 10 commands/second "

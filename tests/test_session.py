@@ -51,6 +51,12 @@ def make_config(server: MockWebTilesServer, **overrides) -> Config:
         restart_delay=0.05,
         stuck_timeout=0.2,
         reconnect_delay=0.05,
+        # Character creation waits for the screen to hold still before it
+        # believes the character is in the dungeon. Real screens are a network
+        # round trip apart; here they are microseconds, so the production
+        # window would just be dead time at the start of every test.
+        newgame_settle=0.1,
+        newgame_poll_interval=0.02,
     )
     return dataclasses.replace(base, **overrides)
 
@@ -80,6 +86,12 @@ async def running_session(
             break
         await asyncio.sleep(0.01)
     assert session.in_game, "session never entered a game"
+    # Being in a game is not the same as being ready for input: character
+    # creation holds the keyboard until the character is actually standing in
+    # the dungeon. Tests that queue a command would otherwise race it.
+    await wait_until(
+        lambda: session.accepting_input, what="the session to accept input"
+    )
     return session, queue, recorder, task
 
 
@@ -710,5 +722,254 @@ async def test_bare_quaff_is_still_just_the_key(server: MockWebTilesServer) -> N
         queue.put(parse("quaff"), "alice")  # type: ignore[arg-type]
         await asyncio.sleep(0.3)
         assert {"msg": "input", "text": "q"} in server.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)
+
+
+# -- character creation -----------------------------------------------------
+
+
+class NewGameServer(MockWebTilesServer):
+    """A mock that puts up character creation the way ``newgame.cc`` does.
+
+    The sequence and its exit rules are copied from the real thing, because
+    the parts that bite are exactly the ones a looser fake would paper over:
+    the species screen, the "do you want to play this combination?" popup that
+    ``!`` provokes, and a weapon screen after it — three screens, each its own
+    push, the first and last reporting the *same* layout name. Escape aborts on
+    both layouts rather than backing out, and that is recorded here so a test
+    can prove the bot never sends one.
+    """
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        #: Which screen is up: "species", "confirm", "weapon" or None.
+        self.screen: str | None = None
+        self.aborted = False
+        self.rerolls = 0
+
+    async def start_game_messages(self, session: Session) -> None:
+        await self._push(session, "species", "newgame-choice")
+
+    async def _push(self, session: Session, screen: str, layout: str) -> None:
+        self.screen = screen
+        await self.send_batch(
+            session,
+            [
+                {"msg": "ui-push", "type": layout},
+                {"msg": "input_mode", "mode": MouseMode.COMMAND},
+            ],
+        )
+
+    async def _pop(self, session: Session) -> None:
+        self.screen = None
+        await self.send(session, {"msg": "ui-pop"})
+
+    async def _enter_dungeon(self, session: Session) -> None:
+        self.screen = None
+        await self.send_batch(
+            session,
+            [
+                {"msg": "input_mode", "mode": MouseMode.COMMAND},
+                {"msg": "player", "name": "testbot", "title": "the Skirmisher",
+                 "species": "Minotaur", "hp": 18, "hp_max": 18, "turn": 0},
+            ],
+        )
+
+    async def _abort(self, session: Session) -> None:
+        self.aborted = True
+        self.screen = None
+        await self.end_game(session, reason="abort")
+
+    async def on_input(self, session: Session, obj: dict[str, Any]) -> None:
+        if self.screen is None:
+            await super().on_input(session, obj)
+            return
+
+        # Escape is `game_ended(game_exit::abort)` on both creation layouts.
+        if obj.get("msg") == "key" and obj.get("keycode") == KEY_ESCAPE:
+            await self._abort(session)
+            return
+        key = obj.get("text", "")
+
+        if self.screen == "species":
+            if key == "!":  # M_RANDOM_CHAR: random species and background
+                await self._pop(session)
+                await self._push(session, "confirm", "newgame-random-combo")
+            return
+
+        if self.screen == "confirm":
+            if key.lower() == "q":
+                await self._abort(session)
+            elif key in ("n", "N", "\t", "!", "#"):
+                self.rerolls += 1
+                await self._pop(session)
+                await self._push(session, "confirm", "newgame-random-combo")
+            else:  # anything else accepts the rolled combination
+                await self._pop(session)
+                await self._push(session, "weapon", "newgame-choice")
+            return
+
+        if self.screen == "weapon" and key == "*":
+            await self._pop(session)
+            await self._enter_dungeon(session)
+
+
+async def newgame_session(**overrides):
+    mock = NewGameServer(ping_interval=30.0)
+    await mock.start()
+    session, queue, recorder, task = await running_session(mock, **overrides)
+    return mock, session, queue, recorder, task
+
+
+def texts_sent(mock: MockWebTilesServer) -> list[str]:
+    return [
+        k.get("text", "")
+        for k in mock.sessions[0].received_keys
+        if k.get("msg") == "input"
+    ]
+
+
+async def test_character_creation_answers_every_screen_it_is_shown() -> None:
+    mock, session, _, _, task = await newgame_session()
+    try:
+        await wait_until(
+            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            what="the character to reach the dungeon",
+        )
+        # '!' for a random species and background, then accept the rolled
+        # combination, then a random weapon. Three screens, three keys.
+        assert texts_sent(mock)[:3] == ["!", "y", "*"]
+        assert not mock.aborted
+        assert mock.rerolls == 0
+    finally:
+        await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_character_creation_never_sends_escape() -> None:
+    # Escape is not "back out of this screen" during creation — `_prompt_choice`
+    # and `_reroll_random` both call `game_ended(game_exit::abort)`. The stuck
+    # watchdog has to stay out of the way for the whole sequence.
+    mock, session, _, _, task = await newgame_session(stuck_timeout=0.05)
+    try:
+        await wait_until(
+            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            what="the character to reach the dungeon",
+        )
+        assert not mock.aborted
+        assert {"msg": "key", "keycode": KEY_ESCAPE} not in mock.sessions[0].received_keys
+    finally:
+        await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_no_chat_input_reaches_the_creation_screens() -> None:
+    # A queued keystroke landing on the species screen picks a species; landing
+    # on the confirmation it might be a 'q' and end the run before it starts.
+    mock = NewGameServer(ping_interval=30.0)
+    await mock.start()
+    config = make_config(mock)
+    queue = CommandQueue(max_depth=config.queue_depth, ttl=config.queue_ttl)
+    recorder = Recorder()
+    session = GameSession(
+        config, queue, on_lines=recorder.on_lines, on_event=recorder.on_event
+    )
+    # Queued before the session even connects, so they are sitting there for
+    # the whole of creation rather than racing it. 'q' is the dangerous one:
+    # on the confirmation screen it is `game_ended(game_exit::abort)`.
+    for text in ("q", "z", "o"):
+        queue.put(parse(text), "alice")  # type: ignore[arg-type]
+    task = asyncio.create_task(session.run())
+    try:
+        await wait_until(
+            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            what="the character to reach the dungeon",
+        )
+        assert not mock.aborted
+        # Only the bot's own creation keys got through.
+        assert texts_sent(mock)[:3] == ["!", "y", "*"]
+    finally:
+        await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_input_flows_again_once_the_character_is_in_the_dungeon() -> None:
+    mock, session, queue, _, task = await newgame_session()
+    try:
+        await wait_until(
+            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            what="the character to reach the dungeon",
+        )
+        queue.put(parse("o"), "alice")  # type: ignore[arg-type]
+        await wait_until(
+            lambda: "o" in texts_sent(mock), what="chat input to reach the game"
+        )
+    finally:
+        await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_a_death_is_followed_by_a_fresh_random_character() -> None:
+    mock, session, queue, recorder, task = await newgame_session(
+        auto_restart=True, restart_delay=0.05
+    )
+    try:
+        await wait_until(
+            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            what="the first character to reach the dungeon",
+        )
+        before = len(texts_sent(mock))
+        await mock.end_game(mock.sessions[0], reason="dead")
+        await wait_until(
+            lambda: len([e for e in recorder.events if e.kind == "game_started"]) == 2,
+            what="a second character",
+        )
+        await wait_until(
+            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            what="the second character to reach the dungeon",
+        )
+        # The whole creation sequence runs again for the new character.
+        assert texts_sent(mock)[before:before + 3] == ["!", "y", "*"]
+        assert not mock.aborted
+    finally:
+        await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_the_death_report_and_morgue_link_are_announced() -> None:
+    mock, session, _, recorder, task = await newgame_session()
+    try:
+        await wait_until(
+            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            what="the character to reach the dungeon",
+        )
+        await mock.end_game(
+            mock.sessions[0], reason="dead", dump="https://crawl.example/morgue.txt"
+        )
+        await wait_until(
+            lambda: any(e.kind == "game_ended" for e in recorder.events),
+            what="the game-over event",
+        )
+        ended = next(e for e in recorder.events if e.kind == "game_ended")
+        assert ended.reason == "dead"
+        assert ended.detail == "You die..."
+        assert ended.url == "https://crawl.example/morgue.txt"
+    finally:
+        await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_a_resumed_save_shows_no_creation_screens(
+    server: MockWebTilesServer,
+) -> None:
+    # The plain mock drops straight into play, as resuming a save does. Nothing
+    # from the creation sequence may be typed into the dungeon.
+    session, _, _, task = await running_session(server)
+    try:
+        await asyncio.sleep(0.4)
+        sent = texts_sent(server)
+        for key in ("!", "#", "*", "y"):
+            assert key not in sent
     finally:
         await shutdown(session, task)

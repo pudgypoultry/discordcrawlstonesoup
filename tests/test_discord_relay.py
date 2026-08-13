@@ -6,6 +6,7 @@ accepts, ignores and refuses without needing a token.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 from typing import Any
 
@@ -13,8 +14,9 @@ import pytest
 
 from dcssbot.cmdqueue import CommandQueue
 from dcssbot.config import Config
-from dcssbot.discordbot import DiscordRelay
+from dcssbot.discordbot import DiscordRelay, format_game_over
 from dcssbot.gamestate import GameState, InputContext, MouseMode
+from dcssbot.session import GameEvent
 
 CHANNEL_ID = 4242
 
@@ -312,3 +314,103 @@ async def test_requiring_the_prefix_turns_bare_input_off() -> None:
     assert len(queue) == 0
     await relay.on_message(FakeMessage(".dcss/o"))
     assert len(queue) == 1
+
+
+# -- the game-over post -----------------------------------------------------
+
+
+def test_game_over_post_carries_the_headline_report_and_morgue() -> None:
+    post = format_game_over(
+        GameEvent(
+            "game_ended",
+            detail="Bloop the Skirmisher (Minotaur Fighter)\nSlain by a jackal",
+            url="https://crawl.example/morgue/bloop.txt",
+            reason="dead",
+        )
+    )
+    assert post.startswith("☠️ **The character has died.**")
+    # The record keeps its own line breaks, inside a code block so Discord
+    # does not read the punctuation in monster names as markup.
+    assert "```\nBloop the Skirmisher (Minotaur Fighter)\nSlain by a jackal\n```" in post
+    # Angle brackets keep Discord from unfurling a preview of the morgue file.
+    assert "Morgue: <https://crawl.example/morgue/bloop.txt>" in post
+
+
+def test_a_win_is_not_announced_as_a_death() -> None:
+    post = format_game_over(GameEvent("game_ended", detail="escaped", reason="won"))
+    assert "🏆" in post
+    assert "died" not in post
+
+
+def test_an_unrecognised_exit_reason_still_gets_a_headline() -> None:
+    post = format_game_over(GameEvent("game_ended", detail="x", reason="something new"))
+    assert post.startswith("**Game over.**")
+
+
+def test_game_over_post_survives_a_missing_report_and_morgue() -> None:
+    # `dump` is only set when the server templates a morgue_url, and a crash
+    # can end a game with no record at all.
+    assert format_game_over(GameEvent("game_ended", reason="crash")) == (
+        "💥 **The game crashed.**"
+    )
+
+
+def test_a_long_report_is_trimmed_to_fit_a_discord_message() -> None:
+    post = format_game_over(
+        GameEvent("game_ended", detail="x" * 5000, reason="dead")
+    )
+    assert len(post) < 2000
+    assert post.rstrip().endswith("…\n```")
+
+
+def test_backticks_in_a_report_cannot_break_out_of_the_code_block() -> None:
+    post = format_game_over(
+        GameEvent("game_ended", detail="killed by ```rm -rf```", reason="dead")
+    )
+    # Exactly two fences: the ones this function opened and closed.
+    assert post.count("```") == 2
+
+
+async def test_a_post_does_not_wait_forever_for_the_gateway(monkeypatch) -> None:
+    # The game announces a new character from its own startup path, so an
+    # unbounded wait here would let a token that never connects wedge the game
+    # side entirely — with nothing in the log to say why.
+    import dcssbot.discordbot as discordbot
+
+    monkeypatch.setattr(discordbot, "READY_TIMEOUT", 0.05)
+    relay, _ = make_relay()
+    assert not relay._ready.is_set()
+    await asyncio.wait_for(relay.post("anyone there?"), timeout=2.0)
+
+
+async def test_an_announcement_does_not_wait_forever_for_the_gateway(
+    monkeypatch,
+) -> None:
+    import dcssbot.discordbot as discordbot
+
+    monkeypatch.setattr(discordbot, "READY_TIMEOUT", 0.05)
+    relay, _ = make_relay()
+    assert not relay._ready.is_set()
+    await asyncio.wait_for(
+        relay.announce(GameEvent("game_ended", reason="dead")), timeout=2.0
+    )
+
+
+async def test_status_explains_that_a_character_is_being_created() -> None:
+    # During creation the context is an ordinary MENU, so without this the
+    # status is indistinguishable from the game sitting in a menu — and gives
+    # no hint that commands are being deliberately held back.
+    relay, _ = make_relay()
+    relay.session.accepting_input = False
+    channel = FakeChannel()
+    await relay.on_message(FakeMessage(".dcss/status", channel=channel))
+    assert "new character" in channel.sent[0]
+
+
+async def test_status_is_normal_once_input_is_flowing() -> None:
+    relay, _ = make_relay()
+    relay.session.accepting_input = True
+    relay.session.state.handle({"msg": "player", "hp": 9, "hp_max": 18})
+    channel = FakeChannel()
+    await relay.on_message(FakeMessage(".dcss/status", channel=channel))
+    assert "HP 9/18" in channel.sent[0]

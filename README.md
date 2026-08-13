@@ -58,9 +58,25 @@ in a non-play context past `DCSS_STUCK_TIMEOUT` with an empty queue, the bot
 sends Escape — once per window, not every poll.
 
 **Death restarts the run.** Crawl does not continue after you die, and anarchy
-input kills characters fast. On `game_ended` the bot posts the morgue link and
-starts a new character, answering the creation menus *only while one is
-actually open*.
+input kills characters fast. On `game_ended` the bot posts the death record
+crawl supplies — who the character was, what killed it, where, and how long it
+lasted — along with the morgue link if the server publishes one, and then rolls
+a new character on the same game (so, the same crawl version).
+
+**Chat cannot type during character creation.** From the moment a character
+dies until the next one is standing in the dungeon, keystrokes are held back
+and the watchdog stands down. This is not tidiness: on both creation screens
+Escape is `game_ended(game_exit::abort)` rather than "go back", and `q` at the
+confirmation does the same, so a single stray key would end the new run before
+it started. Queued commands age out on the usual TTL while the gate is shut.
+
+**The new character is random, not recommended.** `!` is crawl's
+`M_RANDOM_CHAR` — a random species *and* background. (`#` is
+`M_VIABLE_CHAR`, which only draws from combinations the game recommends.) The
+creation sequence is driven by whichever screen crawl says is open rather than
+by a fixed list of keys, because the number of screens varies: the species
+screen, then the "do you want to play this combination?" confirmation, then a
+weapon screen — but only for backgrounds that have a weapon choice at all.
 
 ## Running it
 
@@ -161,6 +177,13 @@ appeared, the game side never got in.
 | `DCSS_STATUS_LINE` | `true` | Prefix each post with HP/place/turn |
 | `DCSS_STUCK_TIMEOUT` | `45` | Seconds before the watchdog sends Escape |
 | `DCSS_AUTO_RESTART` | `true` | Start a new character on death |
+| `DCSS_RESTART_DELAY` | `10` | Pause after a death before starting the next character |
+| `DCSS_NEWGAME_CHAR` | `!` | Character screen: `!` fully random, `#` random-but-recommended |
+| `DCSS_NEWGAME_CONFIRM` | `y` | Accepts the rolled combination. Never set this to `q` (aborts) or `n`/`!`/`#` (rerolls forever) |
+| `DCSS_NEWGAME_WEAPON` | `*` | Weapon and later choice screens: `*` random, `+` random recommended |
+| `DCSS_NEWGAME_POLL` | `0.15` | How often to check which creation screen is up |
+| `DCSS_NEWGAME_SETTLE` | `1.5` | How long the screens must stay gone before input is let back in |
+| `DCSS_NEWGAME_TIMEOUT` | `60` | Give up on creation after this long and unlock the keyboard |
 | `DCSS_COMPRESSION` | `false` | Use compressed frames instead of `no-compression` |
 | `DCSS_REQUIRE_PREFIX` | `false` | Require `.dcss/` on keys too, keeping the channel chattable |
 | `DCSS_ENFORCE_CONTEXT` | `false` | Drop commands that do not fit the current screen |

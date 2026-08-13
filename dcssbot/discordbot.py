@@ -21,6 +21,7 @@ import discord
 
 from .cmdqueue import CommandQueue
 from .config import Config
+from .formatting import escape_for_code_block
 from .gamestate import InputContext
 from .grammar import ParseError, allowed_in, help_text, parse
 from .session import GameEvent
@@ -35,6 +36,53 @@ ERROR_COOLDOWN = 10.0
 #: Rarely, because it is a standing condition rather than a per-message fault —
 #: but never saying it makes a disconnected game side look like a dead bot.
 NO_GAME_COOLDOWN = 60.0
+
+#: Headlines keyed by crawl's exit type (`_exit_type_to_string` in `end.cc`).
+#: "dead" is the common one; the others are rare but each reads very wrong
+#: under a headline that says the character died.
+GAME_OVER_HEADLINES: dict[str, str] = {
+    "dead": "☠️ **The character has died.**",
+    "won": "🏆 **The character escaped with the Orb!**",
+    "bailed out": "🚪 **The character left the dungeon.**",
+    "quit": "🏳️ **The character quit.**",
+    "save": "💾 **The game was saved and closed.**",
+    "crash": "💥 **The game crashed.**",
+    "abort": "**The game was aborted.**",
+}
+DEFAULT_GAME_OVER_HEADLINE = "**Game over.**"
+
+#: How long an outbound post waits for the gateway before giving up on it. The
+#: game side must never be held up by Discord — the runner starts both together
+#: exactly so that a gateway which never connects does not stop the game from
+#: running — and the game calls in here to announce a new character while it is
+#: still getting one into the dungeon. An unbounded wait would turn a bad token
+#: into a wedged session with nothing in the log to explain it.
+READY_TIMEOUT = 30.0
+
+#: Discord's hard cap is 2000 characters. A death record is five or six lines,
+#: but it is server-supplied text and the post has a headline and a link around
+#: it, so it is trimmed rather than trusted.
+MAX_REPORT_CHARS = 1500
+
+
+def format_game_over(event: GameEvent) -> str:
+    """The game-over post: headline, death record, morgue link.
+
+    The record goes in a code block because it is crawl's own multi-line
+    layout, and because it is full of characters — asterisks in monster names,
+    underscores, backticks — that Discord would otherwise read as markup.
+    """
+    parts = [GAME_OVER_HEADLINES.get(event.reason, DEFAULT_GAME_OVER_HEADLINE)]
+    report = event.detail.strip()
+    if len(report) > MAX_REPORT_CHARS:
+        report = report[:MAX_REPORT_CHARS].rstrip() + "\n…"
+    if report:
+        parts.append(f"```\n{escape_for_code_block(report)}\n```")
+    if event.url:
+        # Angle brackets suppress Discord's link preview, which for a morgue
+        # file is a wall of plain text nobody asked to see inline.
+        parts.append(f"Morgue: <{event.url}>")
+    return "\n".join(parts)
 
 
 class DiscordRelay(discord.Client):
@@ -76,6 +124,20 @@ class DiscordRelay(discord.Client):
 
     async def wait_ready(self) -> None:
         await self._ready.wait()
+
+    async def _ready_for_output(self) -> bool:
+        """Wait a bounded time for the gateway, rather than forever."""
+        if self._ready.is_set():
+            return True
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=READY_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.warning(
+                "discord gateway still not ready after %.0fs; dropping a post",
+                READY_TIMEOUT,
+            )
+            return False
+        return True
 
     # -- inbound ----------------------------------------------------------
 
@@ -139,6 +201,14 @@ class DiscordRelay(discord.Client):
         state = self.session.state
         if not state.in_game:
             return f"No game running — {self.session.why_not_running()}"
+        if not getattr(self.session, "accepting_input", True):
+            # Otherwise this reads as an ordinary menu, and the honest answer
+            # to "why is nothing happening" is invisible: keys are being held
+            # back on purpose while a character is rolled up.
+            return (
+                "Rolling up a new character — keys are held back until it is in "
+                f"the dungeon, so anything sent now will expire. {self.queue.summary()}"
+            )
         status = state.status_line() or "no player data yet"
         return f"`{status}` — waiting on: {state.context.value}, {self.queue.summary()}"
 
@@ -179,7 +249,8 @@ class DiscordRelay(discord.Client):
 
     async def post(self, text: str) -> None:
         """Post to every relay channel, tolerating per-channel failures."""
-        await self._ready.wait()
+        if not await self._ready_for_output():
+            return
         for channel in self._channels:
             try:
                 await channel.send(text)
@@ -188,9 +259,15 @@ class DiscordRelay(discord.Client):
 
     async def announce(self, event: GameEvent) -> None:
         """Post a lifecycle event."""
-        await self._ready.wait()
+        if not await self._ready_for_output():
+            return
         if event.kind == "game_started":
-            text = f"**New game started.** Watch live: {event.url}" if event.url else "**New game started.**"
+            bits = ["**New game started.**"]
+            if event.detail:
+                bits.append(event.detail)
+            if event.url:
+                bits.append(f"Watch live: {event.url}")
+            text = " ".join(bits)
             self._start_message = None
             for channel in self._channels:
                 try:
@@ -202,12 +279,7 @@ class DiscordRelay(discord.Client):
             return
 
         if event.kind == "game_ended":
-            parts = ["**Game over.**"]
-            if event.detail:
-                parts.append(event.detail)
-            if event.url:
-                parts.append(f"Morgue: <{event.url}>")
-            await self.post(" ".join(parts))
+            await self.post(format_game_over(event))
             await self._retire_start_message()
             return
 
