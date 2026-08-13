@@ -132,6 +132,7 @@ context change.
 | Log stops after `connecting to ...` | The connect is hanging rather than being refused — wrong host, or a firewall dropping packets. It gives up after 20s |
 | `session ended: ... Connect call failed` | Nothing is listening. Start the mock, or check the port |
 | Connects on Linux but not Windows | `localhost` resolves to `::1` first on Windows. Use `127.0.0.1` in `DCSS_WS_URL` |
+| `SSLCertVerificationError: certificate has expired` on `wss://`, but the site loads fine in a browser | A CA rotation left two certificates for the same root in the Windows store — the fresh one and an expired leftover — and OpenSSL's path-builder can grab the stale one where Windows' own CryptoAPI (what the browser and .NET use) skips it. The client pins to `certifi`'s bundle for `wss://` specifically to avoid this; make sure `certifi` is installed (`pip install -e ".[dev]"` picks it up) |
 | Bot online, ignores every message | Message Content intent is off, or `DISCORD_CHANNEL_IDS` holds a server ID instead of a channel ID |
 | `cannot see channel <id>` | The bot is not in that server, or lacks View Channels |
 

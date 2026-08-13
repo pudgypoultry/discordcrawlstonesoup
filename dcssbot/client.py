@@ -15,10 +15,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import ssl as ssl_module
 from typing import Any, Awaitable, Callable, Iterable
 
 import websockets
 from websockets.asyncio.client import ClientConnection, connect
+
+try:
+    import certifi
+except ImportError:  # pragma: no cover - certifi is a normal dependency
+    certifi = None  # type: ignore[assignment]
 
 from .keys import KEY_ESCAPE
 from .protocol import (
@@ -83,6 +89,7 @@ class WebTilesClient:
             open_timeout=self.open_timeout,
             ping_interval=self.ping_interval,
             max_size=2**24,
+            ssl=self._build_ssl_context(),
         )
         negotiated = self._ws.protocol.subprotocol
         compressed = negotiated != NO_COMPRESSION_SUBPROTOCOL
@@ -96,6 +103,27 @@ class WebTilesClient:
         self.connected = True
         # Start pumping before anything is sent, so replies cannot be missed.
         self._reader = asyncio.create_task(self._pump(), name="webtiles-reader")
+
+    def _build_ssl_context(self) -> ssl_module.SSLContext | None:
+        """An explicit TLS context for ``wss://``, pinned to certifi's bundle.
+
+        Left alone, ``connect()`` builds its context with
+        ``ssl.create_default_context()``, which on Windows loads trust anchors
+        live from the OS certificate store via CryptoAPI. During a CA
+        rotation that store can hold two certificates for the same root — the
+        new one and an expired leftover of the old one — and Windows' own
+        chain builder picks the valid one without complaint. OpenSSL's
+        simpler path-builder can grab the stale duplicate instead and give up
+        with ``certificate has expired``, on a chain a browser accepts without
+        blinking. Pinning to certifi's maintained, duplicate-free bundle
+        avoids depending on whatever state the local OS store happens to be
+        in. Returns ``None`` for ``ws://`` (nothing to configure) and if
+        certifi is unavailable, which falls back to ``connect()``'s own
+        default and preserves the previous behaviour.
+        """
+        if not self.url.startswith("wss://") or certifi is None:
+            return None
+        return ssl_module.create_default_context(cafile=certifi.where())
 
     async def close(self) -> None:
         """Close the connection and stop the reader."""

@@ -89,5 +89,12 @@ turn game output into Discord posts; `discordbot.py` is the gateway side.
   `q` then a letter uses the item outright — two keys, not three.
 - Identified potions and scrolls read "potion of X" / "scroll of X"; anything
   else is unidentified (`item-name.cc`). That is the whole "unknown" test.
+- `wss://` connections build their own TLS context pinned to `certifi`'s
+  bundle rather than trusting `ssl.create_default_context()`'s OS-store
+  default. On Windows that default reads live from CryptoAPI, and a CA
+  rotation can leave both a fresh and an expired copy of the same root there;
+  OpenSSL's path-builder can pick the stale one where Windows' own chain
+  builder does not, failing with `certificate has expired` on a chain a
+  browser accepts. See `WebTilesClient._build_ssl_context`.
 - Test against `dcssbot.mockserver`, not a live server. `scripts/probe.py` is
   the one-keystroke debugging tool.

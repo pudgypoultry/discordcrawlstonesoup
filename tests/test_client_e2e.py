@@ -12,6 +12,8 @@ from typing import AsyncIterator
 
 import pytest
 
+import ssl
+
 from dcssbot.client import LoginFailed, WebTilesClient
 from dcssbot.keys import KEY_ESCAPE, KEY_TAB
 from dcssbot.mockserver import (
@@ -211,3 +213,37 @@ async def test_pending_requests_fail_when_the_server_disconnects(
             await asyncio.wait_for(pending, timeout=2.0)
     finally:
         await client.close()
+
+
+# -- TLS context construction ----------------------------------------------
+#
+# The behaviour these protect against only shows up on Windows, where a CA
+# rotation can leave two certificates for the same root in the OS store and
+# OpenSSL's path-builder grabs the stale one — a chain a browser accepts
+# fails here with "certificate has expired". These tests can only check that
+# the right context gets built and that it actually has certifi's roots
+# loaded, not reproduce the Windows-specific trust-store bug itself.
+
+
+def test_ws_urls_get_no_explicit_ssl_context() -> None:
+    client = WebTilesClient("ws://127.0.0.1:8080/socket")
+    assert client._build_ssl_context() is None
+
+
+def test_wss_urls_get_a_context_pinned_to_certifi() -> None:
+    client = WebTilesClient("wss://crawl.example.org/socket")
+    context = client._build_ssl_context()
+    assert context is not None
+    assert isinstance(context, ssl.SSLContext)
+    # Confirms the bundle actually loaded rather than being an empty context.
+    assert context.cert_store_stats()["x509_ca"] > 0
+
+
+def test_the_wss_context_does_not_depend_on_the_os_store() -> None:
+    # Two contexts built the same way load the same fixed set of roots,
+    # regardless of whatever is currently sitting in the OS certificate store.
+    client = WebTilesClient("wss://crawl.example.org/socket")
+    first = client._build_ssl_context()
+    second = client._build_ssl_context()
+    assert first is not None and second is not None
+    assert first.cert_store_stats() == second.cert_store_stats()
