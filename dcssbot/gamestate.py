@@ -111,6 +111,11 @@ class GameState:
     #: layout type, so this is what distinguishes "the screen I already
     #: answered" from "the next one that looks just like it".
     ui_push_count: int = 0
+    #: Whether the game has ever reported an ``input_mode``. Crawl sends none
+    #: at all while a character is being created — verified by tracing a real
+    #: 0.34.1 server — so this is positive evidence that the game has become
+    #: interactive, as opposed to `input_mode` merely still holding its default.
+    input_mode_seen: bool = False
     #: Monotonic time of the last context change.
     context_since: float = field(default_factory=time.monotonic)
 
@@ -136,6 +141,7 @@ class GameState:
         elif kind == "input_mode":
             mode = msg.get("mode")
             if isinstance(mode, int):
+                self.input_mode_seen = True
                 self.input_mode = mode
                 # Leaving MORE is reported as a mode change, not a msgs update.
                 if mode != MouseMode.MORE:
@@ -209,8 +215,8 @@ class GameState:
         self.more = False
         self.text_cursor = False
         self.input_mode = MouseMode.NORMAL
-        if not self.in_game:
-            self.player.clear()
+        self.input_mode_seen = False
+        self.player.clear()
 
     # -- derived context --------------------------------------------------
 
@@ -222,6 +228,20 @@ class GameState:
     def ui_layout(self) -> str | None:
         """``type`` of the innermost pushed UI layout, if there is one."""
         return self.ui_layouts[-1] if self.ui_layouts else None
+
+    @property
+    def character_ready(self) -> bool:
+        """Whether a playable character actually exists yet.
+
+        Character creation is a game that has started but has no character in
+        it, which `in_game` cannot express. Two signals, either of which is
+        enough, both taken from a trace of a real 0.34.1 server: crawl sends
+        ``player`` with an empty ``name`` while the creation menus are up and
+        the real name once the character exists, and it sends no ``input_mode``
+        at all until the game is interactive.
+        """
+        named = bool(str(self.player.get("name") or "").strip())
+        return named or self.input_mode_seen
 
     @property
     def context_age(self) -> float:
@@ -273,15 +293,20 @@ class GameState:
         ``title`` is crawl's ``player_title()`` — "the Skirmisher" — which
         reflects the background; the background itself is never sent as its own
         field, so the title stands in for it.
+
+        Requires a name. While the creation menus are open crawl still sends
+        ``title`` and ``species``, but they describe whichever menu entry is
+        highlighted rather than anyone who exists — "the Conjurer (Yak)" one
+        moment and something else the next.
         """
         p = self.player
         name = str(p.get("name") or "").strip()
+        if not name:
+            return None
         title = str(p.get("title") or "").strip()
         species = str(p.get("species") or "").strip()
-        who = " ".join(part for part in (name, title) if part)
-        if who and species:
-            return f"{who} ({species})"
-        return who or species or None
+        who = f"{name} {title}".strip()
+        return f"{who} ({species})" if species else who
 
     def status_line(self) -> str | None:
         """A one-line HP/place summary, or None if we have no player data."""

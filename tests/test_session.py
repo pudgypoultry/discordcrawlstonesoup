@@ -11,7 +11,7 @@ import pytest
 from dcssbot.client import WebTilesClient
 from dcssbot.cmdqueue import CommandQueue
 from dcssbot.config import Config
-from dcssbot.gamestate import InputContext, MouseMode
+from dcssbot.gamestate import GameState, InputContext, MouseMode
 from dcssbot.grammar import parse
 from dcssbot.keys import KEY_ESCAPE
 from dcssbot.mockserver import (
@@ -741,6 +741,13 @@ class NewGameServer(MockWebTilesServer):
     can prove the bot never sends one.
     """
 
+    #: How long the game takes to put its first screen up. Real crawl 0.34.1
+    #: answers `play` with `game_started` in about 50ms but does not push the
+    #: species screen for another second — and in that gap it has sent no
+    #: `input_mode` and a `player` whose `name` is empty, which is the whole
+    #: reason the bot cannot conclude anything from a timer.
+    STARTUP_DELAY = 0.4
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         #: Which screen is up: "species", "confirm", "weapon" or None.
@@ -749,15 +756,20 @@ class NewGameServer(MockWebTilesServer):
         self.rerolls = 0
 
     async def start_game_messages(self, session: Session) -> None:
+        await asyncio.sleep(self.STARTUP_DELAY)
         await self._push(session, "species", "newgame-choice")
 
     async def _push(self, session: Session, screen: str, layout: str) -> None:
         self.screen = screen
+        # No `input_mode` here: crawl sends none until the game is interactive.
+        # The `player` it does send during creation describes the highlighted
+        # menu entry and carries an empty name.
         await self.send_batch(
             session,
             [
                 {"msg": "ui-push", "type": layout},
-                {"msg": "input_mode", "mode": MouseMode.COMMAND},
+                {"msg": "player", "name": "", "title": "the Conjurer",
+                 "species": "Yak"},
             ],
         )
 
@@ -834,7 +846,7 @@ async def test_character_creation_answers_every_screen_it_is_shown() -> None:
     mock, session, _, _, task = await newgame_session()
     try:
         await wait_until(
-            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            lambda: session.accepting_input and mock.screen is None,
             what="the character to reach the dungeon",
         )
         # '!' for a random species and background, then accept the rolled
@@ -854,7 +866,7 @@ async def test_character_creation_never_sends_escape() -> None:
     mock, session, _, _, task = await newgame_session(stuck_timeout=0.05)
     try:
         await wait_until(
-            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            lambda: session.accepting_input and mock.screen is None,
             what="the character to reach the dungeon",
         )
         assert not mock.aborted
@@ -883,7 +895,7 @@ async def test_no_chat_input_reaches_the_creation_screens() -> None:
     task = asyncio.create_task(session.run())
     try:
         await wait_until(
-            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            lambda: session.accepting_input and mock.screen is None,
             what="the character to reach the dungeon",
         )
         assert not mock.aborted
@@ -898,7 +910,7 @@ async def test_input_flows_again_once_the_character_is_in_the_dungeon() -> None:
     mock, session, queue, _, task = await newgame_session()
     try:
         await wait_until(
-            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            lambda: session.accepting_input and mock.screen is None,
             what="the character to reach the dungeon",
         )
         queue.put(parse("o"), "alice")  # type: ignore[arg-type]
@@ -916,7 +928,7 @@ async def test_a_death_is_followed_by_a_fresh_random_character() -> None:
     )
     try:
         await wait_until(
-            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            lambda: session.accepting_input and mock.screen is None,
             what="the first character to reach the dungeon",
         )
         before = len(texts_sent(mock))
@@ -926,7 +938,7 @@ async def test_a_death_is_followed_by_a_fresh_random_character() -> None:
             what="a second character",
         )
         await wait_until(
-            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            lambda: session.accepting_input and mock.screen is None,
             what="the second character to reach the dungeon",
         )
         # The whole creation sequence runs again for the new character.
@@ -941,7 +953,7 @@ async def test_the_death_report_and_morgue_link_are_announced() -> None:
     mock, session, _, recorder, task = await newgame_session()
     try:
         await wait_until(
-            lambda: session.state.context is InputContext.PLAY and mock.screen is None,
+            lambda: session.accepting_input and mock.screen is None,
             what="the character to reach the dungeon",
         )
         await mock.end_game(
@@ -973,3 +985,115 @@ async def test_a_resumed_save_shows_no_creation_screens(
             assert key not in sent
     finally:
         await shutdown(session, task)
+
+
+async def test_a_slow_first_screen_does_not_unlock_the_keyboard_early() -> None:
+    # The bug this pins was found against a real 0.34.1 server, not this mock:
+    # `game_started` came back in ~50ms and the species screen only ~1.1s
+    # later. In between there is no `input_mode` and no named character, and
+    # the derived context is plain PLAY — so a bot that concluded "creation is
+    # over" from a quiet period unlocked the keyboard onto the species menu.
+    class SlowServer(NewGameServer):
+        STARTUP_DELAY = 1.2
+
+    mock = SlowServer(ping_interval=30.0)
+    await mock.start()
+    config = make_config(mock)
+    queue = CommandQueue(max_depth=config.queue_depth, ttl=config.queue_ttl)
+    recorder = Recorder()
+    session = GameSession(
+        config, queue, on_lines=recorder.on_lines, on_event=recorder.on_event
+    )
+    task = asyncio.create_task(session.run())
+    try:
+        # The settle window (0.1s here) elapses many times over during the
+        # startup gap; the keyboard must stay locked throughout it.
+        await wait_until(lambda: session.in_game, what="the game to start")
+        await asyncio.sleep(0.6)
+        assert not session.accepting_input, "unlocked before the species screen"
+        await wait_until(
+            lambda: session.accepting_input and mock.screen is None,
+            what="the character to reach the dungeon",
+        )
+        assert texts_sent(mock)[:3] == ["!", "y", "*"]
+        assert not mock.aborted
+    finally:
+        await shutdown(session, task)
+        await mock.stop()
+
+
+async def test_creation_is_not_declared_over_by_a_nameless_player_update() -> None:
+    # Crawl sends `player` while the menus are open, describing whichever entry
+    # is highlighted, with an empty name. That is not a character.
+    state = GameState()
+    state.handle({"msg": "game_started"})
+    state.handle({"msg": "player", "name": "", "title": "the Conjurer",
+                  "species": "Yak"})
+    assert not state.character_ready
+    assert state.character_description() is None
+    state.handle({"msg": "player", "name": "botuser", "title": "the Sneak",
+                  "species": "Barachi"})
+    assert state.character_ready
+    assert state.character_description() == "botuser the Sneak (Barachi)"
+
+
+def test_a_non_url_morgue_dump_is_not_posted_as_a_link() -> None:
+    # A stock local webserver whose game config leaves `morgue_url` unset sends
+    # the string "None" glued to the filename. Observed, not hypothesised.
+    from dcssbot.session import _morgue_url
+
+    assert _morgue_url("Nonemorgue-botuser-20260813-014548") is None
+    assert _morgue_url("") is None
+    assert _morgue_url(None) is None
+    assert _morgue_url(12345) is None
+    assert (
+        _morgue_url("https://crawl.example/morgue/bot/x.txt")
+        == "https://crawl.example/morgue/bot/x.txt"
+    )
+
+
+async def test_the_game_over_screen_is_dismissed_without_waiting_it_out() -> None:
+    # Crawl holds the process open on the "press any key" death summary, so
+    # `game_ended` — and with it the next character — waits on this keypress.
+    # Leaving it to the ordinary stuck timeout stalled the restart by that long
+    # against a real server.
+    class GameOverServer(NewGameServer):
+        def __init__(self, *a, **kw) -> None:
+            super().__init__(*a, **kw)
+            self.dismissed = False
+
+        async def show_game_over(self, session: Session) -> None:
+            self.screen = None
+            await self.send_batch(
+                session,
+                [{"msg": "ui-push", "type": "game-over"}, {"msg": "msgs", "more": True}],
+            )
+
+        async def on_input(self, session: Session, obj: dict[str, Any]) -> None:
+            if self.dismissed or self.screen is not None:
+                await super().on_input(session, obj)
+                return
+            self.dismissed = True
+            await self.send(session, {"msg": "ui-pop"})
+            await self.end_game(session, reason="dead")
+
+    mock = GameOverServer(ping_interval=30.0)
+    await mock.start()
+    session = task = None
+    try:
+        # A stuck timeout far longer than the test: the dismissal must not be
+        # waiting on it.
+        session, _, recorder, task = await running_session(
+            mock, stuck_timeout=600.0, auto_restart=False
+        )
+        await mock.show_game_over(mock.sessions[0])
+        await wait_until(
+            lambda: any(e.kind == "game_ended" for e in recorder.events),
+            what="the death to be reported",
+            timeout=10.0,
+        )
+        assert mock.dismissed
+    finally:
+        if session and task:
+            await shutdown(session, task)
+        await mock.stop()

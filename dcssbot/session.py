@@ -44,6 +44,11 @@ NEWGAME_CHOICE = "newgame-choice"
 NEWGAME_CONFIRM = "newgame-random-combo"
 NEWGAME_LAYOUTS: frozenset[str] = frozenset({NEWGAME_CHOICE, NEWGAME_CONFIRM})
 
+#: The "press any key" summary crawl shows over a finished character
+#: (`end_game` in ``end.cc``). The game process does not exit — and so
+#: ``game_ended`` does not arrive — until it is dismissed.
+GAME_OVER_LAYOUT = "game-over"
+
 LineSink = Callable[[list[LogLine]], Awaitable[None]]
 EventSink = Callable[["GameEvent"], Awaitable[None]]
 
@@ -305,15 +310,10 @@ class GameSession:
         # how long it lasted. That is the morgue summary; `dump` is the URL of
         # the full morgue file, and only exists if the server templates one.
         report = death_report(str(msg.get("message") or ""))
-        dump = msg.get("dump")
+        dump = _morgue_url(msg.get("dump"))
         log.info("game ended (%s); dropped %d queued commands", reason or "?", dropped)
         await self.on_event(
-            GameEvent(
-                "game_ended",
-                detail=report,
-                url=str(dump) if dump else None,
-                reason=reason,
-            )
+            GameEvent("game_ended", detail=report, url=dump, reason=reason)
         )
         if self.config.auto_restart:
             self._cancel_newgame()
@@ -650,6 +650,15 @@ class GameSession:
                 # `game_ended(game_exit::abort)`. The creation loop owns the
                 # keyboard until it is finished.
                 continue
+            if self.state.ui_layout == GAME_OVER_LAYOUT:
+                # Not a screen anyone is going to drive, and nothing else
+                # happens until it is gone: crawl holds the process open on it,
+                # so the death report and the next character both wait on this
+                # keypress. Verified against a real server, where leaving it to
+                # the ordinary stuck timeout stalled the restart by that long.
+                log.info("dismissing the game-over screen")
+                await self.escape_to_neutral()
+                continue
             if self.state.context not in STUCK_CONTEXTS:
                 continue
             if self.state.context_age < self.config.stuck_timeout:
@@ -719,10 +728,10 @@ class GameSession:
         # from the species screen it has just answered, and keys go astray.
         answered: int | None = None
         picked_character = False
-        # When the creation screens first went away. Crawl pops each one before
-        # pushing the next, and in that gap nothing is on the UI stack and
-        # `input_mode` is back to COMMAND — indistinguishable from standing in
-        # the dungeon. So their absence has to hold for a moment to count.
+        # When the creation screens first went away *and* a character existed.
+        # Crawl pops each screen before pushing the next, so the gaps have to
+        # be debounced; `character_ready` is what stops the gaps counting as
+        # the end of creation in the first place.
         settled_since: float | None = None
 
         while time.monotonic() < deadline:
@@ -745,12 +754,20 @@ class GameSession:
                     log.info("character creation: %s, sending %r", layout, key)
                     await client.send_text(key)
                     answered = screen
-            elif self.state.in_game:
+            elif self.state.in_game and self.state.character_ready:
+                # No creation screen and a character that actually exists. The
+                # second half matters: `game_started` arrives when the process
+                # starts, but a real 0.34.1 server takes about a second longer
+                # to push the species screen, and for that second the state is
+                # indistinguishable from being in the dungeon. Concluding from
+                # a timer alone raced that gap and lost on a cold start,
+                # opening the keyboard onto the species menu.
+                #
                 # Anything that is not a creation screen — a menu, a prompt, a
-                # `--more--` on the welcome message — means creation is over
-                # and the game is putting up its own screens. Waiting for
-                # normal play specifically would stall here until the timeout,
-                # with the keyboard locked the whole time.
+                # `--more--` on the welcome message — is the game putting up
+                # its own screens, and counts as creation being over. Waiting
+                # for normal play specifically would stall until the timeout
+                # with the keyboard locked.
                 now = time.monotonic()
                 if settled_since is None:
                     settled_since = now
@@ -758,7 +775,8 @@ class GameSession:
                     log.info("character is in the dungeon")
                     return True
             else:
-                # Not in a game yet; the creation screens may still be coming.
+                # Still starting up, or a character is being rolled: no
+                # keystrokes and no conclusions yet.
                 settled_since = None
 
             await asyncio.sleep(self.config.newgame_poll_interval)
@@ -784,3 +802,18 @@ def _skill_signature(rows: list[SkillRow]) -> tuple[tuple[str, str], ...]:
     landed.
     """
     return tuple((row.key, row.name) for row in rows)
+
+
+def _morgue_url(dump: Any) -> str | None:
+    """The morgue link from ``game_ended``, if it is actually a link.
+
+    `process_handler.py` builds it as ``morgue_url + filename``, and a server
+    whose game config leaves ``morgue_url`` unset can send the string "None"
+    glued to the filename instead of a URL — observed on a stock local
+    webserver. Posting that to Discord as a link makes the bot look broken and
+    tells nobody anything, so anything that is not http(s) is dropped.
+    """
+    if not isinstance(dump, str):
+        return None
+    url = dump.strip()
+    return url if url.startswith(("http://", "https://")) else None

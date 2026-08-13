@@ -63,6 +63,15 @@ crawl supplies — who the character was, what killed it, where, and how long it
 lasted — along with the morgue link if the server publishes one, and then rolls
 a new character on the same game (so, the same crawl version).
 
+The morgue link only appears if the server's game config sets `morgue_url`; a
+stock local webserver does not, and sends the string `None` glued to the
+filename instead, which is dropped rather than posted as a link. Crawl also
+holds the game process open on a "press any key" summary after a death, so the
+bot dismisses that itself — otherwise nothing would arrive at all. The
+`--more--` before it is left to the ordinary watchdog, so on a completely
+silent channel a death can take up to `DCSS_STUCK_TIMEOUT` to be reported; any
+message in the channel clears it sooner.
+
 **Chat cannot type during character creation.** From the moment a character
 dies until the next one is standing in the dungeon, keystrokes are held back
 and the watchdog stands down. This is not tidiness: on both creation screens
@@ -182,7 +191,7 @@ appeared, the game side never got in.
 | `DCSS_NEWGAME_CONFIRM` | `y` | Accepts the rolled combination. Never set this to `q` (aborts) or `n`/`!`/`#` (rerolls forever) |
 | `DCSS_NEWGAME_WEAPON` | `*` | Weapon and later choice screens: `*` random, `+` random recommended |
 | `DCSS_NEWGAME_POLL` | `0.15` | How often to check which creation screen is up |
-| `DCSS_NEWGAME_SETTLE` | `1.5` | How long the screens must stay gone before input is let back in |
+| `DCSS_NEWGAME_SETTLE` | `1.5` | Debounce on the gaps between creation screens |
 | `DCSS_NEWGAME_TIMEOUT` | `60` | Give up on creation after this long and unlock the keyboard |
 | `DCSS_COMPRESSION` | `false` | Use compressed frames instead of `no-compression` |
 | `DCSS_REQUIRE_PREFIX` | `false` | Require `.dcss/` on keys too, keeping the channel chattable |
